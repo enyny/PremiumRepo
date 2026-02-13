@@ -34,38 +34,27 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # BAGIAN INI SUDAH DIBERSIHKAN
+      # Kita hanya membuat file local.properties kosong agar build tidak error.
       - name: Create local.properties
         run: |
           cd $GITHUB_WORKSPACE/src
           touch local.properties
 
-      - name: Build Plugins and Generate Repo Info
+      - name: Build Plugins
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
           ./gradlew make makePluginsJson
           ./gradlew ensureJarCompatibility
           
-          # Buat folder output
+          # Buat folder sementara
           mkdir -p $GITHUB_WORKSPACE/output_builds
           
-          # Copy plugin dan plugins.json
+          # Copy hasil build
           cp **/build/*.cs3 $GITHUB_WORKSPACE/output_builds/ || true
           cp **/build/*.jar $GITHUB_WORKSPACE/output_builds/ || true
           cp build/plugins.json $GITHUB_WORKSPACE/output_builds/ || true
-
-          # MEMBUAT FILE repo.json SECARA OTOMATIS
-          cat <<EOF > $GITHUB_WORKSPACE/output_builds/repo.json
-          {
-              "name": "Michat88 Repo",
-              "iconUrl": "https://github.com/michat88.png",
-              "description": "Repository Plugin Michat88",
-              "manifestVersion": 1,
-              "pluginLists": [
-                "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/plugins.json"
-              ]
-          }
-          EOF
 
       - name: Push to builds branch
         run: |
