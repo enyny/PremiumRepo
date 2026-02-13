@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-// PERBAIKAN 1: Nama class diubah jadi 'MissAVProvider' (V besar) agar sesuai dengan Plugin
 class MissAVProvider : MainAPI() {
     override var mainUrl = "https://missav.ws/id"
     override var name = "MissAV"
@@ -15,6 +14,21 @@ class MissAVProvider : MainAPI() {
 
     private fun String.toUrl(): String {
         return if (this.startsWith("http")) this else "https://missav.ws$this"
+    }
+
+    // Fungsi tambahan untuk memproses durasi (Menggantikan addDuration yang error)
+    private fun parseDuration(duration: String?): Long? {
+        if (duration.isNullOrEmpty()) return null
+        return try {
+            val parts = duration.trim().split(":").map { it.toLong() }
+            when (parts.size) {
+                3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L // HH:mm:ss
+                2 -> (parts[0] * 60 + parts[1]) * 1000L // mm:ss
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
@@ -38,7 +52,6 @@ class MissAVProvider : MainAPI() {
             }
         }
 
-        // PERBAIKAN 2: Menggunakan 'newHomePageResponse' alih-alih constructor lama
         return newHomePageResponse(homePageList)
     }
 
@@ -48,11 +61,14 @@ class MissAVProvider : MainAPI() {
         val title = linkElement.text().trim()
         val imgElement = element.selectFirst("img")
         val posterUrl = imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") }
+        
+        // Ambil teks durasi, misal "2:15:00"
         val durationText = element.selectFirst("span.absolute.bottom-1.right-1")?.text()?.trim()
 
         return newMovieSearchResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
-            addDuration(durationText)
+            // PERBAIKAN 1: Menggunakan fungsi parseDuration manual dan assign ke this.duration
+            this.duration = parseDuration(durationText)
         }
     }
 
@@ -78,14 +94,20 @@ class MissAVProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
 
         val tags = document.select("div.text-secondary a[href*='/genres/']").map { it.text() }
-        val actors = document.select("div.text-secondary a[href*='/actresses/'], div.text-secondary a[href*='/actors/']").map { it.text() }
+        
+        // PERBAIKAN 2: Mengubah List<String> menjadi List<ActorData>
+        val actors = document.select("div.text-secondary a[href*='/actresses/'], div.text-secondary a[href*='/actors/']")
+            .map { element ->
+                ActorData(Actor(element.text(), null))
+            }
+
         val year = document.selectFirst("time")?.text()?.trim()?.take(4)?.toIntOrNull()
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
-            this.actors = actors
+            this.actors = actors // Sekarang tipe datanya sudah sesuai (List<ActorData>)
             this.year = year
         }
     }
@@ -104,8 +126,6 @@ class MissAVProvider : MainAPI() {
             val uuid = match.groupValues[1]
             val videoUrl = "https://surrit.com/$uuid/playlist.m3u8"
 
-            // PERBAIKAN 3: Menggunakan 'newExtractorLink' builder (sesuai ExtractorApi.kt)
-            // Constructor ExtractorLink() yang lama sudah deprecated dan akan error
             callback.invoke(
                 newExtractorLink(
                     source = "MissAV",
