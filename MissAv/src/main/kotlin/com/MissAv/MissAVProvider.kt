@@ -1,155 +1,250 @@
-package com.MissAv
+package com.MissAV
 
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import org.jsoup.nodes.Element
 
+@OptIn(com.lagradost.cloudstream3.Prerelease::class)
 class MissAVProvider : MainAPI() {
-    override var mainUrl              = "https://missav.ws"
-    override var name                 = "MissAV"
-    override val hasMainPage          = true
-    override var lang                 = "en"
-    override val hasDownloadSupport   = true
-    override val hasChromecastSupport = true
-    override val supportedTypes       = setOf(TvType.NSFW)
-    override val vpnStatus            = VPNStatus.MightBeNeeded
-    val subtitleCatUrl = "https://www.subtitlecat.com"
+    override var mainUrl = "https://missav.ws"
+    override var name = "MissAV"
+    override val hasMainPage = true
+    override var lang = "id"
+    override val supportedTypes = setOf(TvType.NSFW)
 
     override val mainPage = mainPageOf(
-            "/dm514/en/new" to "Recent Update",
-            "/dm588/en/release" to "New Release",
-            "/dm291/en/today-hot" to "Most Viewed Today",
-            "/dm169/en/weekly-hot" to "Most Viewed by Week",
-            "/dm256/en/monthly-hot" to "Most Viewed by Month",
-            "/dm97/en/fc2" to "Uncensored FC2 AV",
-            "/dm34/en/madou" to "Madou AV",
-            "/dm628/id/uncensored-leak" to "Uncensored Leak",
-            "/en/klive" to "Korean Live AV"
-        )
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-            val document = app.get("$mainUrl${request.data}?page=$page").document
-            val responseList  = document.select(".thumbnail").mapNotNull { it.toSearchResult() }
-            return newHomePageResponse(HomePageList(request.name, responseList, isHorizontalImages = true),hasNext = true)
+        "$mainUrl/$lang/uncensored-leak" to "Kebocoran Tanpa Sensor",
+        "$mainUrl/$lang/release" to "Keluaran Terbaru",
+        "$mainUrl/$lang/new" to "Recent Update",
+        "$mainUrl/$lang/genres/Wanita%20Menikah/Ibu%20Rumah%20Tangga" to "Wanita Menikah"
+    )
 
-    }
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        val url = if (page > 1) "${request.data}?page=$page" else request.data
+        val document = app.get(url).document
+        val homeItems = ArrayList<SearchResponse>()
 
-    private fun Element.toSearchResult(): SearchResponse {
-        val status = this.select(".bg-blue-800").text()
-        val title = if(status.isNotBlank()){"[$status] "+ this.select(".text-secondary").text()} else {this.select(".text-secondary").text()}
-        val href = this.select(".text-secondary").attr("href")
-        val posterUrl = this.selectFirst(".w-full")?.attr("data-src")
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
+        document.select("div.thumbnail").forEach { element ->
+            val linkElement = element.selectFirst("a.text-secondary") ?: return@forEach
+            val href = linkElement.attr("href")
+            val fixedUrl = fixUrl(href)
+            val title = linkElement.text().trim()
+            val img = element.selectFirst("img")
+            val posterUrl = img?.attr("data-src") ?: img?.attr("src")
+
+            homeItems.add(newMovieSearchResponse(title, fixedUrl, TvType.NSFW) {
+                this.posterUrl = posterUrl
+            })
         }
+        
+        return newHomePageResponse(
+            HomePageList(name = request.name, list = homeItems, isHorizontalImages = true),
+            hasNext = true
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        val fixedQuery = query.trim().replace(" ", "-")
+        val url = "$mainUrl/$lang/search/$fixedQuery"
+        return try {
+            val document = app.get(url).document
+            val results = ArrayList<SearchResponse>()
 
-        val searchResponse = mutableListOf<SearchResponse>()
+            document.select("div.thumbnail").forEach { element ->
+                val linkElement = element.selectFirst("a.text-secondary") ?: return@forEach
+                val href = linkElement.attr("href")
+                val fixedUrl = fixUrl(href)
+                val title = linkElement.text().trim()
+                val img = element.selectFirst("img")
+                val posterUrl = img?.attr("data-src") ?: img?.attr("src")
 
-        for (i in 1..7) {
-            val document = app.get("$mainUrl/en/search/$query?page=$i").document
-            //val document = app.get("${mainUrl}/page/$i/?s=$query").document
+                results.add(newMovieSearchResponse(title, fixedUrl, TvType.NSFW) {
+                    this.posterUrl = posterUrl
+                })
+            }
+            results
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ArrayList()
+        }
+    }
 
-            val results = document.select(".thumbnail").mapNotNull { it.toSearchResult() }
+    // --- FUNGSI LOAD (DETAIL VIDEO + REKOMENDASI CERDAS) ---
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+        
+        // Ambil Data Utama
+        val title = document.selectFirst("h1.text-base")?.text()?.trim() ?: "Unknown Title"
+        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
+            ?: document.selectFirst("video.player")?.attr("poster")
+        val description = document.select("div.text-secondary")
+            .maxByOrNull { it.text().length }?.text()?.trim()
+            ?: document.selectFirst("meta[property='og:description']")?.attr("content")
 
-            if(results.isNotEmpty())
-            {
-                for (result in results)
-                {
-                    if(!searchResponse.contains(result))
-                    {
-                        searchResponse.add(result)
+        // === FITUR SARAN FILM CERDAS ===
+        // Mengambil rekomendasi dari halaman Aktris/Genre agar gambar valid
+        val recommendations = ArrayList<SearchResponse>()
+        
+        try {
+            // 1. Coba cari Link Aktris dulu (Prioritas Utama)
+            var recUrl = document.selectFirst("div.text-secondary a[href*='/actresses/']")?.attr("href")
+            
+            // 2. Kalau tidak ada Aktris, cari Link Genre atau Pembuat
+            if (recUrl == null) {
+                recUrl = document.selectFirst("div.text-secondary a[href*='/makers/']")?.attr("href")
+            }
+            if (recUrl == null) {
+                recUrl = document.selectFirst("div.text-secondary a[href*='/genres/']")?.attr("href")
+            }
+
+            // 3. Jika ketemu link referensi, buka halamannya dan ambil daftar videonya
+            if (recUrl != null) {
+                val fixedRecUrl = fixUrl(recUrl)
+                val recDoc = app.get(fixedRecUrl).document
+                
+                recDoc.select("div.thumbnail").forEach { element ->
+                    val linkElement = element.selectFirst("a.text-secondary") ?: return@forEach
+                    val href = linkElement.attr("href")
+                    val fixedVideoUrl = fixUrl(href)
+
+                    // Jangan masukkan video yang sedang ditonton ke daftar saran
+                    if (fixedVideoUrl != url) {
+                        val recTitle = linkElement.text().trim()
+                        val img = element.selectFirst("img")
+                        val recPoster = img?.attr("data-src") ?: img?.attr("src")
+
+                        // Pastikan poster ada agar tidak muncul kotak abu-abu
+                        if (!recPoster.isNullOrEmpty()) {
+                            recommendations.add(
+                                newMovieSearchResponse(recTitle, fixedVideoUrl, TvType.NSFW) {
+                                    this.posterUrl = recPoster
+                                }
+                            )
+                        }
                     }
                 }
             }
-            else
-            {
-                break
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-
-        return searchResponse
-
-    }
-
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.trim().toString()
-        val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
+            this.recommendations = recommendations
         }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-
-
-            val data = app.get(data)
-            val doc = data.document
-            getAndUnpack(data.text).let { unpackedText ->
-                val linkList = unpackedText.split(";")
-                val finalLink = "source='(.*)'".toRegex().find(linkList.first())?.groups?.get(1)?.value
-                callback.invoke(
-                    newExtractorLink(
-                    source = name,
-                    name = name,
-                    url = finalLink.toString(),
-                    ExtractorLinkType.M3U8
-                ) {
-                    this.referer = ""
-                    this.quality = Qualities.Unknown.value
-                }
-                )
-            }
-
+    // --- LOGIKA SUBTITLE AKURAT (STRICT FILTER) ---
+    private suspend fun fetchSubtitleCat(code: String, subtitleCallback: (SubtitleFile) -> Unit) {
         try {
-            val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim().toString()
-            val javCode = "([a-zA-Z]+-\\d+)".toRegex().find(title)?.groups?.get(1)?.value
-            if(!javCode.isNullOrEmpty())
-            {
-                val query = "$subtitleCatUrl/index.php?search=$javCode"
-                val subDoc = app.get(query, timeout = 15).document
-                val subList = subDoc.select("td a")
-                for(item in subList)
-                {
-                    if(item.text().contains(javCode,ignoreCase = true))
-                    {
-                        val fullUrl = "$subtitleCatUrl/${item.attr("href")}"
-                        val pDoc = app.get(fullUrl, timeout = 10).document
-                        val sList = pDoc.select(".col-md-6.col-lg-4")
-                        for(item in sList)
-                        {
-                            try {
-                                val language = item.select(".sub-single span:nth-child(2)").text()
-                                val text = item.select(".sub-single span:nth-child(3) a")
-                                
-                                // PERBAIKAN 1: Cek isNotEmpty() bukan null check
-                                if(text.isNotEmpty() && text[0].text() == "Download")
-                                {
-                                    val url = "$subtitleCatUrl${text[0].attr("href")}"
-                                    
-                                    // PERBAIKAN 2: Menggunakan newSubtitleFile() alih-alih constructor SubtitleFile()
-                                    subtitleCallback.invoke(
-                                        newSubtitleFile(
-                                            language.replace("\uD83D\uDC4D \uD83D\uDC4E",""),  // Use label for the name
-                                            url     // Use extracted URL
-                                        )
-                                    )
-                                }
-                            } catch (e: Exception) { }
-                        }
+            val searchUrl = "https://www.subtitlecat.com/index.php?search=$code"
+            val searchDoc = app.get(searchUrl).document
+            
+            val searchResults = searchDoc.select("table.sub-table tbody tr td:nth-child(1) > a")
+            
+            // Ambil 15 hasil teratas untuk dicek
+            searchResults.take(15).forEach { linkElement ->
+                val resultTitle = linkElement.text().trim()
+                
+                // FILTER: Judul subtitle WAJIB mengandung Kode Video (misal: SSNI-528)
+                if (resultTitle.contains(code, ignoreCase = true)) {
+                    var detailPath = linkElement.attr("href")
+                    if (!detailPath.startsWith("http")) {
+                        detailPath = if (detailPath.startsWith("/")) detailPath else "/$detailPath"
+                        detailPath = "https://www.subtitlecat.com$detailPath"
+                    }
 
+                    try {
+                        val detailDoc = app.get(detailPath).document
+                        
+                        detailDoc.select("div.sub-single").forEach { item ->
+                            val rawLang = item.select("span").getOrNull(1)?.text()?.trim() ?: "Unknown"
+                            val downloadEl = item.selectFirst("a.green-link")
+                            val downloadHref = downloadEl?.attr("href")
+
+                            if (downloadHref != null) {
+                                val finalUrl = if (downloadHref.startsWith("http")) {
+                                    downloadHref
+                                } else {
+                                    "https://www.subtitlecat.com$downloadHref"
+                                }
+                                
+                                subtitleCallback.invoke(
+                                    SubtitleFile(
+                                        lang = rawLang, // Biarkan nama asli agar player melakukan grouping
+                                        url = finalUrl
+                                    )
+                                )
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Skip error per item
                     }
                 }
-
             }
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
-        return true
+    @Suppress("DEPRECATION_ERROR") 
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        
+        var text = app.get(data).text
+        text = getAndUnpack(text) 
+
+        val m3u8Regex = Regex("""(https?:\\?\/\\?\/[^"']+\.m3u8)""")
+        val matches = m3u8Regex.findAll(text)
+        
+        val uniqueUrls = matches.map { 
+            it.groupValues[1].replace("\\/", "/") 
+        }.toSet()
+
+        // Filter nama sumber agar tidak ganda di UI
+        val addedNames = mutableListOf<String>()
+
+        if (uniqueUrls.isNotEmpty()) {
+            uniqueUrls.forEach { fixedUrl ->
+                val sourceName = if (fixedUrl.contains("surrit")) "Surrit" else "MissAV"
+                
+                if (!addedNames.contains(sourceName)) {
+                    addedNames.add(sourceName)
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = sourceName,
+                            url = fixedUrl,
+                            referer = data,
+                            quality = Qualities.Unknown.value, // Unknown = Auto (Player baca track dari m3u8)
+                            isM3u8 = true
+                        )
+                    )
+                }
+            }
+
+            // --- PROSES KODE ID & SUBTITLE ---
+            val codeRegex = Regex("""([a-zA-Z]{2,5}-\d{3,5})""")
+            val codeMatch = codeRegex.find(data)
+            val code = codeMatch?.value
+            
+            if (code != null) {
+                try {
+                    fetchSubtitleCat(code, subtitleCallback)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            return true
+        }
+        return false
     }
 }
