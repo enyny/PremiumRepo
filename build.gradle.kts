@@ -1,96 +1,74 @@
-import com.android.build.gradle.BaseExtension
-import com.lagradost.cloudstream3.gradle.CloudstreamExtension
-import org.gradle.kotlin.dsl.register
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
+name: Build
 
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://jitpack.io")
-    }
+concurrency:
+  group: "build"
+  cancel-in-progress: true
 
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.13.2")
-        classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
-    }
-}
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - '*.md'
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://jitpack.io")
-    }
-}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          path: "src"
 
-fun Project.cloudstream(configuration: CloudstreamExtension.() -> Unit) = extensions.getByName<CloudstreamExtension>("cloudstream").configuration()
+      - name: Checkout Builds Branch
+        uses: actions/checkout@v4
+        with:
+          ref: "builds"
+          path: "builds"
 
-fun Project.android(configuration: BaseExtension.() -> Unit) = extensions.getByName<BaseExtension>("android").configuration()
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'temurin'
+          cache: gradle
 
-subprojects {
-    apply(plugin = "com.android.library")
-    apply(plugin = "kotlin-android")
-    apply(plugin = "com.lagradost.cloudstream3.gradle")
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-    cloudstream {
-        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/phisher98/cloudstream-extensions-phisher")
-        authors = listOf("Phisher98")
-    }
+      - name: Setup Properties
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          touch local.properties
+          # Jika nanti butuh secret spesifik, tambahkan di bawah ini:
+          # echo "NAMA_KEY=${{ secrets.NAMA_SECRET_DI_GITHUB }}" >> local.properties
 
-    android {
-        namespace = "com.phisher98"
+      - name: Build Plugins
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          chmod +x gradlew
+          ./gradlew make makePluginsJson ensureJarCompatibility
 
-        defaultConfig {
-            minSdk = 21
-            compileSdkVersion(35)
-            targetSdk = 35
+      - name: Move Artifacts to Builds Folder
+        run: |
+          # Hapus file lama di folder builds
+          rm -f $GITHUB_WORKSPACE/builds/*.cs3
+          rm -f $GITHUB_WORKSPACE/builds/*.jar
+          rm -f $GITHUB_WORKSPACE/builds/plugins.json
 
-        }
+          # Copy file baru dari src ke folder builds
+          # Menggunakan '|| :' agar tidak error jika tidak ada file .jar (hanya .cs3)
+          cp src/**/build/*.cs3 $GITHUB_WORKSPACE/builds/ 2>/dev/null || :
+          cp src/**/build/*.jar $GITHUB_WORKSPACE/builds/ 2>/dev/null || :
+          cp src/build/plugins.json $GITHUB_WORKSPACE/builds/ 2>/dev/null || :
 
-        compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_1_8
-            targetCompatibility = JavaVersion.VERSION_1_8
-        }
-
-
-        tasks.withType<KotlinJvmCompile> {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_1_8)
-                freeCompilerArgs.addAll(
-                    "-Xno-call-assertions",
-                    "-Xno-param-assertions",
-                    "-Xno-receiver-assertions",
-                    "-Xannotation-default-target=param-property" // <--- INI TAMBAHANNYA
-                )
-            }
-        }
-    }
-
-    dependencies {
-        val implementation by configurations
-        val cloudstream by configurations
-        cloudstream("com.lagradost:cloudstream3:pre-release")
-
-        // Other dependencies
-        implementation(kotlin("stdlib"))
-        implementation("com.github.Blatzar:NiceHttp:0.4.16")
-        implementation("org.jsoup:jsoup:1.22.1")
-        implementation("androidx.annotation:annotation:1.9.1")
-        implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.20.1")
-        implementation("com.fasterxml.jackson.core:jackson-databind:2.20.1")
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-        implementation("org.mozilla:rhino:1.9.0")
-        implementation("me.xdrop:fuzzywuzzy:1.4.0")
-        implementation("com.google.code.gson:gson:2.13.2")
-        implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-        implementation("com.github.vidstige:jadb:v1.2.1")
-        implementation("org.bouncycastle:bcpkix-jdk15on:1.70")
-    }
-}
-
-tasks.register<Delete>("clean") {
-    delete(rootProject.layout.buildDirectory)
-}
+      - name: Push builds
+        run: |
+          cd $GITHUB_WORKSPACE/builds
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add .
+          # Commit amend untuk menimpa commit terakhir (agar history tidak menumpuk)
+          git commit --amend -m "Build $GITHUB_SHA" || git commit -m "Build $GITHUB_SHA"
+          git push --force
