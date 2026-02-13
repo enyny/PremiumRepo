@@ -5,63 +5,60 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class MissAVProvider : MainAPI() {
-    // Konfigurasi dasar
     override var mainUrl = "https://missav.ws/id"
     override var name = "MissAV"
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "id"
+    
+    // Fitur Search & Homepage aktif
     override val hasMainPage = true
     override val hasQuickSearch = false
 
-    // Helper untuk memperbaiki URL relatif
+    // ==============================
+    // 1. KONFIGURASI KATEGORI (HOME)
+    // ==============================
+    // Kita daftarkan URL dan Nama Kategori di sini.
+    // Cloudstream akan otomatis memproses ini satu per satu.
+    override val mainPage = mainPageOf(
+        "https://missav.ws/dm628/id/uncensored-leak" to "Kebocoran Tanpa Sensor",
+        "https://missav.ws/dm590/id/release" to "Keluaran Terbaru",
+        "https://missav.ws/dm515/id/new" to "Recent Update",
+        "https://missav.ws/dm68/id/genres/Wanita%20Menikah/Ibu%20Rumah%20Tangga" to "Wanita menikah"
+    )
+
+    // Helper URL
     private fun String.toUrl(): String {
         return if (this.startsWith("http")) this else "https://missav.ws$this"
     }
 
-    // Helper untuk mengubah "02:15:30" menjadi menit (Int)
-    private fun parseDurationToMinutes(duration: String?): Int? {
-        if (duration.isNullOrEmpty()) return null
-        return try {
-            val parts = duration.trim().split(":").map { it.toInt() }
-            when (parts.size) {
-                3 -> parts[0] * 60 + parts[1] // Jam:Menit:Detik -> Ambil Jam & Menit
-                2 -> parts[0] // Menit:Detik -> Ambil Menit
-                else -> null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     // ==============================
-    // 1. HALAMAN UTAMA (HOME)
+    // 2. FUNGSI LOAD HALAMAN (Get Main Page)
     // ==============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-
-        val sections = document.select("div.sm:container.mx-auto.mb-5.px-4")
-
-        sections.forEach { section ->
-            var title = section.selectFirst("h2.text-nord6")?.text()?.trim()
-                ?: section.selectFirst("h2")?.text()?.trim()
-            
-            // Lewati kategori kosong atau acak
-            if (title.isNullOrEmpty() || title.equals("Acak", ignoreCase = true)) return@forEach
-
-            val items = section.select("div.thumbnail.group").mapNotNull { element ->
-                toSearchResult(element)
-            }
-
-            if (items.isNotEmpty()) {
-                homePageList.add(HomePageList(title, items))
-            }
+        // Logika Pagination:
+        // Jika page = 1, pakai URL asli. Jika page > 1, tambahkan parameter page.
+        // Contoh: .../release?page=2
+        val url = if (page == 1) {
+            request.data
+        } else {
+            // Cek apakah URL sudah punya tanda tanya '?' atau belum
+            val separator = if (request.data.contains("?")) "&" else "?"
+            "${request.data}${separator}page=$page"
         }
 
-        return newHomePageResponse(homePageList)
+        val document = app.get(url).document
+        
+        // Ambil daftar video langsung dari halaman kategori
+        val items = document.select("div.thumbnail.group").mapNotNull { element ->
+            toSearchResult(element)
+        }
+
+        // Kembalikan hasil ke Cloudstream
+        // request.name otomatis mengambil nama dari variabel mainPage di atas
+        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
     }
 
-    // Helper: Mengubah HTML menjadi SearchResponse
+    // Helper: Mengubah elemen HTML video menjadi data SearchResponse
     private fun toSearchResult(element: Element): SearchResponse? {
         val linkElement = element.selectFirst("a.text-secondary") ?: return null
         val url = linkElement.attr("href").toUrl()
@@ -71,18 +68,16 @@ class MissAVProvider : MainAPI() {
         // Prioritas ambil data-src (lazy load), kalau tidak ada baru src
         val posterUrl = imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") }
 
-        // PENTING: Di MainAPI.kt, SearchResponse TIDAK punya field duration.
-        // Jadi kita tidak boleh set duration di sini. Cukup Judul, URL, Poster.
         return newMovieSearchResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
     // ==============================
-    // 2. PENCARIAN (SEARCH)
+    // 3. PENCARIAN (SEARCH)
     // ==============================
     override suspend fun search(query: String): List<SearchResponse> {
-        // Gunakan jalur legacy untuk menghindari proteksi Recombee
+        // Menggunakan jalur legacy agar lebih aman dari token
         val url = "$mainUrl/legacy?keyword=$query"
         val document = app.get(url).document
         
@@ -92,36 +87,30 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 3. DETAIL VIDEO (LOAD)
+    // 4. DETAIL VIDEO (LOAD)
     // ==============================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Ambil Judul
         val title = document.selectFirst("h1.text-base.text-nord6")?.text()?.trim() 
             ?: document.selectFirst("h1")?.text()?.trim() 
             ?: "Unknown Title"
 
-        // Ambil Deskripsi
         val description = document.selectFirst("div.text-secondary.break-all")?.text()?.trim()
             ?: document.selectFirst("meta[name=description]")?.attr("content")
 
-        // Ambil Poster
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
 
-        // Ambil Tags/Genre
         val tags = document.select("div.text-secondary a[href*='/genres/']").map { it.text() }
         
-        // Ambil Aktor & Ubah ke tipe ActorData (Sesuai MainAPI.kt)
         val actors = document.select("div.text-secondary a[href*='/actresses/'], div.text-secondary a[href*='/actors/']")
             .map { element ->
                 ActorData(Actor(element.text(), null))
             }
 
-        // Ambil Tahun
         val year = document.selectFirst("time")?.text()?.trim()?.take(4)?.toIntOrNull()
 
-        // Ambil Durasi (Detik ke Menit)
+        // Ambil durasi (detik) dan konversi ke menit
         val durationSeconds = document.selectFirst("meta[property=og:video:duration]")
             ?.attr("content")?.toIntOrNull()
         val durationMinutes = durationSeconds?.div(60)
@@ -132,12 +121,12 @@ class MissAVProvider : MainAPI() {
             this.tags = tags
             this.actors = actors
             this.year = year
-            this.duration = durationMinutes // Di LoadResponse, duration (Int) didukung
+            this.duration = durationMinutes
         }
     }
 
     // ==============================
-    // 4. LINK VIDEO (PLAYER)
+    // 5. LINK VIDEO (PLAYER)
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -147,7 +136,7 @@ class MissAVProvider : MainAPI() {
     ): Boolean {
         val text = app.get(data).text
         
-        // Regex untuk mencari ID video dari thumbnail player nineyu.com
+        // Regex mengambil UUID dari thumbnail nineyu
         val regex = """nineyu\.com\\/([0-9a-fA-F-]+)\\/seek""".toRegex()
         val match = regex.find(text)
         
@@ -155,7 +144,6 @@ class MissAVProvider : MainAPI() {
             val uuid = match.groupValues[1]
             val videoUrl = "https://surrit.com/$uuid/playlist.m3u8"
 
-            // Menggunakan builder newExtractorLink sesuai ExtractorApi.kt
             callback.invoke(
                 newExtractorLink(
                     source = "MissAV",
@@ -163,7 +151,7 @@ class MissAVProvider : MainAPI() {
                     url = videoUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    this.referer = data // Header Referer wajib ada
+                    this.referer = data
                     this.quality = Qualities.Unknown.value
                 }
             )
