@@ -1,0 +1,162 @@
+[
+    {
+        "iconUrl": "https://raw.githubusercontent.com/michat88/Zaneta/aa97004f4d1d74ed69245e56da2c6ad3293b6106/Icons/Adi.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 236999,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "aldry84"
+        ],
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 8,
+        "internalName": "Adicinemax21",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/Adicinemax21.cs3",
+        "name": "Adicinemax21"
+    },
+    {
+        "iconUrl": "https://raw.githubusercontent.com/michat88/Zaneta/aa97004f4d1d74ed69245e56da2c6ad3293b6106/Icons/Adi.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 231492,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "aldry84"
+        ],
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 7,
+        "internalName": "AdiDrakor",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/AdiDrakor.cs3",
+        "name": "AdiDrakor"
+    },
+    {
+        "iconUrl": "https://moviebox.ph/favicon.ico",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 30516,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "aldry84"
+        ],
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 6,
+        "internalName": "Adimoviebox",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/Adimoviebox.cs3",
+        "name": "Adimoviebox"
+    },
+    {
+        "iconUrl": "https://raw.githubusercontent.com/phisher98/TVVVV/main/eporner.ico",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 12489,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "AdiManu"
+        ],
+        "tvTypes": [
+            "NSFW"
+        ],
+        "version": 13,
+        "internalName": "Eporner",
+        "description": "Eporner",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/Eporner.cs3",
+        "name": "Eporner"
+    },
+    {
+        "iconUrl": "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://idlixian.com&size=16",
+        "jarFileSize": 101565,
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 26785,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "AdiManu"
+        ],
+        "tvTypes": [
+            "TvSeries",
+            "Movie",
+            "Anime",
+            "AsianDrama"
+        ],
+        "version": 2,
+        "internalName": "IdlixProvider",
+        "jarUrl": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/IdlixProvider.jar",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/IdlixProvider.cs3",
+        "name": "IdlixProvider"
+    },
+    {
+        "iconUrl": "https://assets.lk21.party/favicons/apple-icon-144x144.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 39589,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "aldry84"
+        ],
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 6,
+        "internalName": "LayarKacaProvider",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/LayarKacaProvider.cs3",
+        "name": "LayarKacaProvider"
+    },
+    {
+        "iconUrl": "http://mangoporn.net/wp-content/uploads/2024/07/mangoporn.net_.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 13852,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "AmanHnB"
+        ],
+        "tvTypes": [
+            "NSFW"
+        ],
+        "version": 4,
+        "internalName": "Mangoporn",
+        "description": "MangoPorn",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/Mangoporn.cs3",
+        "name": "Mangoporn"
+    },
+    {
+        "iconUrl": "https://missav.ws/missav/logo-square.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/michat88/PremiumRepo",
+        "fileSize": 15051,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "aldey84"
+        ],
+        "tvTypes": [
+            "NSFW"
+        ],
+        "version": 9,
+        "internalName": "MissAv",
+        "description": "Best Japan AV porn site, free forever, high speed, no lag, over 100,000 videos, daily update, no ads while playing video.",
+        "url": "https://raw.githubusercontent.com/michat88/PremiumRepo/builds/MissAv.cs3",
+        "name": "MissAv"
+    }
+]
