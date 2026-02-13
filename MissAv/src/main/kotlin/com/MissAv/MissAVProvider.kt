@@ -10,15 +10,12 @@ class MissAVProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "id"
     
-    // Fitur Search & Homepage aktif
     override val hasMainPage = true
     override val hasQuickSearch = false
 
     // ==============================
-    // 1. KONFIGURASI KATEGORI (HOME)
+    // 1. KONFIGURASI KATEGORI (JANGAN DIUBAH - SUDAH PERFECT)
     // ==============================
-    // Kita daftarkan URL dan Nama Kategori di sini.
-    // Cloudstream akan otomatis memproses ini satu per satu.
     override val mainPage = mainPageOf(
         "https://missav.ws/dm628/id/uncensored-leak" to "Kebocoran Tanpa Sensor",
         "https://missav.ws/dm590/id/release" to "Keluaran Terbaru",
@@ -26,35 +23,27 @@ class MissAVProvider : MainAPI() {
         "https://missav.ws/dm68/id/genres/Wanita%20Menikah/Ibu%20Rumah%20Tangga" to "Wanita menikah"
     )
 
-    // Helper URL
     private fun String.toUrl(): String {
         return if (this.startsWith("http")) this else "https://missav.ws$this"
     }
 
     // ==============================
-    // 2. FUNGSI LOAD HALAMAN (Get Main Page)
+    // 2. HOME PAGE (JANGAN DIUBAH - SUDAH PERFECT)
     // ==============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Logika Pagination:
-        // Jika page = 1, pakai URL asli. Jika page > 1, tambahkan parameter page.
-        // Contoh: .../release?page=2
         val url = if (page == 1) {
             request.data
         } else {
-            // Cek apakah URL sudah punya tanda tanya '?' atau belum
             val separator = if (request.data.contains("?")) "&" else "?"
             "${request.data}${separator}page=$page"
         }
 
         val document = app.get(url).document
         
-        // Ambil daftar video langsung dari halaman kategori
         val items = document.select("div.thumbnail.group").mapNotNull { element ->
             toSearchResult(element)
         }
 
-        // Kembalikan hasil ke Cloudstream
-        // request.name otomatis mengambil nama dari variabel mainPage di atas
         return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
     }
 
@@ -65,7 +54,6 @@ class MissAVProvider : MainAPI() {
         val title = linkElement.text().trim()
         val imgElement = element.selectFirst("img")
         
-        // Prioritas ambil data-src (lazy load), kalau tidak ada baru src
         val posterUrl = imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") }
 
         return newMovieSearchResponse(title, url, TvType.NSFW) {
@@ -74,20 +62,22 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 3. PENCARIAN (SEARCH)
+    // 3. PENCARIAN (PERBAIKAN DI SINI)
     // ==============================
     override suspend fun search(query: String): List<SearchResponse> {
-        // Menggunakan jalur legacy agar lebih aman dari token
-        val url = "$mainUrl/legacy?keyword=$query"
+        // PERBAIKAN: Kita kembali ke URL pencarian standar, bukan legacy.
+        // Cloudstream akan menangani request ini layaknya browser.
+        val url = "$mainUrl/search/$query"
         val document = app.get(url).document
         
+        // Kita gunakan selector yang sama dengan homepage karena strukturnya mirip
         return document.select("div.thumbnail.group").mapNotNull { element ->
             toSearchResult(element)
         }
     }
 
     // ==============================
-    // 4. DETAIL VIDEO (LOAD)
+    // 4. DETAIL VIDEO (JANGAN DIUBAH - SUDAH PERFECT)
     // ==============================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -110,7 +100,6 @@ class MissAVProvider : MainAPI() {
 
         val year = document.selectFirst("time")?.text()?.trim()?.take(4)?.toIntOrNull()
 
-        // Ambil durasi (detik) dan konversi ke menit
         val durationSeconds = document.selectFirst("meta[property=og:video:duration]")
             ?.attr("content")?.toIntOrNull()
         val durationMinutes = durationSeconds?.div(60)
@@ -126,7 +115,7 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 5. LINK VIDEO (PLAYER)
+    // 5. PLAYER (JANGAN DIUBAH - SUDAH PERFECT)
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -136,7 +125,6 @@ class MissAVProvider : MainAPI() {
     ): Boolean {
         val text = app.get(data).text
         
-        // Regex mengambil UUID dari thumbnail nineyu
         val regex = """nineyu\.com\\/([0-9a-fA-F-]+)\\/seek""".toRegex()
         val match = regex.find(text)
         
