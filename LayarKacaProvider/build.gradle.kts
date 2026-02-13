@@ -24,6 +24,6 @@ cloudstream {
     )
 
 
-    iconUrl = "https://klikxxi.me/wp-content/uploads/2024/02/cropped-site-icon.png"
+    iconUrl = "https://assets.lk21.party/favicons/apple-icon-144x144.png"
 
 }
