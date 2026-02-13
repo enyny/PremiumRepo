@@ -14,7 +14,7 @@ class MissAVProvider : MainAPI() {
     override val hasQuickSearch = false
 
     // ==============================
-    // 1. KONFIGURASI KATEGORI (JANGAN DIUBAH - SUDAH PERFECT)
+    // 1. KONFIGURASI KATEGORI
     // ==============================
     override val mainPage = mainPageOf(
         "https://missav.ws/dm628/id/uncensored-leak" to "Kebocoran Tanpa Sensor",
@@ -28,7 +28,7 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 2. HOME PAGE (JANGAN DIUBAH - SUDAH PERFECT)
+    // 2. HOME PAGE
     // ==============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) {
@@ -62,7 +62,7 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 3. PENCARIAN (PERBAIKAN DI SINI)
+    // 3. PENCARIAN
     // ==============================
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/$query"
@@ -74,7 +74,7 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 4. DETAIL VIDEO (JANGAN DIUBAH - SUDAH PERFECT)
+    // 4. DETAIL VIDEO
     // ==============================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -112,7 +112,7 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 5. PLAYER + SUBTITLE (DITAMBAHKAN FITUR SUBTITLECAT)
+    // 5. PLAYER + SUBTITLE (FIXED)
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -120,11 +120,9 @@ class MissAVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Kita ambil document agar bisa ambil Judul untuk pencarian subtitle
         val document = app.get(data).document
-        val text = document.html() // Mengambil raw text untuk regex player
+        val text = document.html()
         
-        // 1. Logika Player (Original)
         val regex = """nineyu\.com\\/([0-9a-fA-F-]+)\\/seek""".toRegex()
         val match = regex.find(text)
         
@@ -144,15 +142,17 @@ class MissAVProvider : MainAPI() {
                 }
             )
 
-            // 2. Logika Subtitle (BARU DITAMBAHKAN)
-            // Mencoba mengambil Kode Video dari Judul (misal: SSIS-669) agar pencarian akurat
+            // --- LOGIKA PENCARIAN SUBTITLE DIPERBAIKI ---
             val title = document.selectFirst("h1.text-base.text-nord6")?.text()?.trim() ?: ""
-            // Regex mencari pola kode umum (Huruf-Angka), contoh: ABC-123
+            
+            // Regex mencari Kode (Misal: JUR-613, SSIS-992, IPX-123)
+            // Pola: Huruf 2-5 digit, tanda strip, Angka 3-5 digit
             val codeRegex = """([A-Za-z]{2,5}-[0-9]{3,5})""".toRegex()
             val codeMatch = codeRegex.find(title)
+            val code = codeMatch?.value
             
-            // Jika ketemu kode (SSIS-123), cari pakai kode. Jika tidak, cari pakai judul full.
-            val query = codeMatch?.value ?: title
+            // Prioritaskan cari pakai Kode. Kalau tidak ada kode, pakai Judul full (walau jarang akurat)
+            val query = code ?: title
             
             if (query.isNotBlank()) {
                 fetchSubtitleCat(query, subtitleCallback)
@@ -165,34 +165,44 @@ class MissAVProvider : MainAPI() {
     }
 
     // ==============================
-    // 6. HELPER SUBTITLE (BARU)
+    // 6. HELPER SUBTITLE (LOGIKA BARU 2 LANGKAH)
     // ==============================
     private suspend fun fetchSubtitleCat(query: String, subtitleCallback: (SubtitleFile) -> Unit) {
         try {
-            // URL Search SubtitleCat
+            // LANGKAH 1: Buka Halaman Pencarian
             val searchUrl = "https://www.subtitlecat.com/index.php?search=$query"
-            val doc = app.get(searchUrl).document
+            val searchDoc = app.get(searchUrl).document
 
-            // Parsing HTML sesuai data yang diberikan user
-            // Mencari elemen <div class="sub-single">
-            doc.select("div.sub-single").forEach { element ->
-                // Span ke-2 adalah Nama Bahasa (Span ke-1 itu Bendera)
-                val lang = element.select("span").getOrNull(1)?.text()?.trim() ?: "Unknown"
-                
-                // Link download ada di class "green-link"
-                val href = element.selectFirst("a.green-link")?.attr("href") ?: ""
+            // Ambil link hasil pertama dari tabel (table.sub-table)
+            // Selector ini mengambil href dari elemen <a> di kolom pertama
+            val firstResultLink = searchDoc.selectFirst("table.sub-table tbody tr td a")?.attr("href")
 
-                if (href.isNotEmpty()) {
-                    // Link bersifat relative, tambahkan domain utama
-                    val fullUrl = "https://www.subtitlecat.com$href"
+            if (!firstResultLink.isNullOrEmpty()) {
+                // Perbaiki URL karena link dari website bersifat relative (subs/...)
+                val detailPageUrl = if (firstResultLink.startsWith("http")) firstResultLink else "https://www.subtitlecat.com/$firstResultLink"
+
+                // LANGKAH 2: Buka Halaman Detail Subtitle
+                val detailDoc = app.get(detailPageUrl).document
+
+                // Ambil semua kotak subtitle (div.sub-single)
+                detailDoc.select("div.sub-single").forEach { element ->
+                    // Ambil Bahasa (Span ke-2)
+                    val lang = element.select("span").getOrNull(1)?.text()?.trim() ?: "Unknown"
                     
-                    subtitleCallback.invoke(
-                        SubtitleFile(lang, fullUrl)
-                    )
+                    // Ambil Link Download (Cari tag <a> yang memiliki href .srt)
+                    // Kita hindari tombol "Translate", kita cari tombol "Download"
+                    val downloadLink = element.select("a[href$='.srt']").firstOrNull()?.attr("href")
+                    
+                    if (!downloadLink.isNullOrEmpty()) {
+                        val fullDownloadUrl = if (downloadLink.startsWith("http")) downloadLink else "https://www.subtitlecat.com$downloadLink"
+                        
+                        subtitleCallback.invoke(
+                            SubtitleFile(lang, fullDownloadUrl)
+                        )
+                    }
                 }
             }
         } catch (e: Exception) {
-            // Error handling diam (silent fail) agar video tetap jalan meski sub gagal
             e.printStackTrace()
         }
     }
