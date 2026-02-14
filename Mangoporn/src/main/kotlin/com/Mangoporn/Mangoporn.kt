@@ -14,8 +14,7 @@ class MangoPorn : MainAPI() {
     override val hasMainPage = true
     override val hasQuickSearch = false
 
-    // HEADERS PENTING:
-    // Ini disamakan dengan hasil CURL kamu agar server tidak memblokir akses kita.
+    // HEADERS PENTING (JANGAN DIUBAH)
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
         "Referer" to "$mainUrl/",
@@ -23,14 +22,31 @@ class MangoPorn : MainAPI() {
     )
 
     // ==============================
-    // 1. MAIN PAGE CONFIGURATION
+    // 1. MAIN PAGE CONFIGURATION (UPDATED)
     // ==============================
     override val mainPage = mainPageOf(
-        "$mainUrl/movies/" to "Recent Movies",
+        // Kategori Utama (Recent Movies dihapus)
         "$mainUrl/trending/" to "Trending",
         "$mainUrl/ratings/" to "Top Rated",
         "$mainUrl/genres/porn-movies/" to "Porn Movies",
-        "$mainUrl/xxxclips/" to "XXX Clips"
+        "$mainUrl/xxxclips/" to "XXX Clips",
+        
+        // 15 Kategori Tambahan (Filtered)
+        "$mainUrl/genre/18-teens/" to "18+ Teens",
+        "$mainUrl/genre/all-girl/" to "All Girl",
+        "$mainUrl/genre/all-sex/" to "All Sex",
+        "$mainUrl/genre/asian/" to "Asian",
+        "$mainUrl/genre/bbc/" to "BBC",
+        "$mainUrl/genre/bbw/" to "BBW",
+        "$mainUrl/genre/big-boobs/" to "Big Boobs",
+        "$mainUrl/genre/big-butt/" to "Big Butt",
+        "$mainUrl/genre/big-cocks/" to "Big Cocks",
+        "$mainUrl/genre/blondes/" to "Blondes",
+        "$mainUrl/genre/blowjobs/" to "Blowjobs",
+        "$mainUrl/genre/cuckolds/" to "Cuckolds",
+        "$mainUrl/genre/cumshots/" to "Cumshots",
+        "$mainUrl/genre/deep-throat/" to "Deep Throat",
+        "$mainUrl/genre/facials/" to "Facials"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
@@ -40,7 +56,6 @@ class MangoPorn : MainAPI() {
             "${request.data}page/$page/"
         }
 
-        // Menggunakan headers saat request
         val document = app.get(url, headers = headers).document
         
         val items = document.select("article.item").mapNotNull {
@@ -51,10 +66,7 @@ class MangoPorn : MainAPI() {
     }
 
     private fun toSearchResult(element: Element): SearchResponse? {
-        // LOGIKA PINTAR:
-        // 1. Cek 'h3 > a' (Struktur halaman Home/Article)
-        // 2. Cek 'div.title > a' (Struktur halaman Search/Result Item)
-        // 3. Cek 'div.image > a' (Cadangan jika judul tidak ada teks)
+        // Logic pintar untuk handle Home & Search structure
         val titleElement = element.selectFirst("h3 > a") 
             ?: element.selectFirst("div.title > a")
             ?: element.selectFirst("div.image > a")
@@ -63,7 +75,6 @@ class MangoPorn : MainAPI() {
         val title = titleElement.text().trim()
         val url = fixUrl(titleElement.attr("href"))
         
-        // Ambil poster dengan menangani lazy load (WP Fastest Cache)
         val imgElement = element.selectFirst("img")
         val posterUrl = imgElement?.attr("data-wpfc-original-src")?.ifEmpty { 
             imgElement.attr("src") 
@@ -75,17 +86,14 @@ class MangoPorn : MainAPI() {
     }
 
     // ==============================
-    // 2. SEARCH (FIXED BERDASARKAN HASIL TERMUX)
+    // 2. SEARCH
     // ==============================
     override suspend fun search(query: String): List<SearchResponse> {
         val fixedQuery = query.replace(" ", "+")
         val url = "$mainUrl/?s=$fixedQuery"
         
-        // Request dengan Headers lengkap
         val document = app.get(url, headers = headers).document
         
-        // FIX: Mengambil 'div.result-item' karena di Termux ditemukan 36 item di sini.
-        // Kita juga tetap menyertakan 'article.item' sebagai cadangan.
         return document.select("div.result-item, article.item").mapNotNull {
             toSearchResult(it)
         }
@@ -124,7 +132,7 @@ class MangoPorn : MainAPI() {
     }
 
     // ==============================
-    // 4. LOAD LINKS (PARALLEL LOADING)
+    // 4. LOAD LINKS
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -162,14 +170,12 @@ class MangoPorn : MainAPI() {
         if (potentialLinks.isNotEmpty()) {
             val sortedLinks = potentialLinks.sortedBy { getServerPriority(it) }
 
-            // Parallel loading agar cepat
             coroutineScope {
                 sortedLinks.map { link ->
                     launch(Dispatchers.IO) {
                         try {
                             loadExtractor(link, data, subtitleCallback, callback)
                         } catch (e: Exception) {
-                            // Ignore error per link
                         }
                     }
                 }
