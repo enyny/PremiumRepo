@@ -3,7 +3,9 @@ package com.Mangoporn
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.* class MangoPorn : MainAPI() {
+import kotlinx.coroutines.*
+
+class MangoPorn : MainAPI() {
     override var mainUrl = "https://mangoporn.net"
     override var name = "MangoPorn"
     override val supportedTypes = setOf(TvType.NSFW)
@@ -12,10 +14,12 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
     override val hasMainPage = true
     override val hasQuickSearch = false
 
-    // Header untuk menipu server agar mengira kita browser asli (sesuai log CURL kamu)
-    private val standardHeaders = mapOf(
+    // HEADERS PENTING:
+    // Ini disamakan dengan hasil CURL kamu agar server tidak memblokir akses kita.
+    private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Referer" to "$mainUrl/"
+        "Referer" to "$mainUrl/",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
     )
 
     // ==============================
@@ -36,8 +40,8 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
             "${request.data}page/$page/"
         }
 
-        // Menggunakan headers standar
-        val document = app.get(url, headers = standardHeaders).document
+        // Menggunakan headers saat request
+        val document = app.get(url, headers = headers).document
         
         val items = document.select("article.item").mapNotNull {
             toSearchResult(it)
@@ -47,13 +51,20 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
     }
 
     private fun toSearchResult(element: Element): SearchResponse? {
-        val titleElement = element.selectFirst("h3 > a") ?: return null
+        // LOGIKA PINTAR:
+        // 1. Cek 'h3 > a' (Struktur halaman Home/Article)
+        // 2. Cek 'div.title > a' (Struktur halaman Search/Result Item)
+        // 3. Cek 'div.image > a' (Cadangan jika judul tidak ada teks)
+        val titleElement = element.selectFirst("h3 > a") 
+            ?: element.selectFirst("div.title > a")
+            ?: element.selectFirst("div.image > a")
+            ?: return null
+
         val title = titleElement.text().trim()
-        
-        // FIX: Menggunakan fixUrl agar url valid (https://...)
         val url = fixUrl(titleElement.attr("href"))
         
-        val imgElement = element.selectFirst("div.poster img")
+        // Ambil poster dengan menangani lazy load (WP Fastest Cache)
+        val imgElement = element.selectFirst("img")
         val posterUrl = imgElement?.attr("data-wpfc-original-src")?.ifEmpty { 
             imgElement.attr("src") 
         }
@@ -64,18 +75,18 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
     }
 
     // ==============================
-    // 2. SEARCH (PERBAIKAN UTAMA)
+    // 2. SEARCH (FIXED BERDASARKAN HASIL TERMUX)
     // ==============================
     override suspend fun search(query: String): List<SearchResponse> {
         val fixedQuery = query.replace(" ", "+")
         val url = "$mainUrl/?s=$fixedQuery"
         
-        // Request menggunakan Headers lengkap agar tidak diblokir
-        val document = app.get(url, headers = standardHeaders).document
+        // Request dengan Headers lengkap
+        val document = app.get(url, headers = headers).document
         
-        // Kita coba cari selector standar
-        // Jika kosong, kemungkinan situs memblokir bot atau struktur berubah di mode search
-        return document.select("article.item").mapNotNull {
+        // FIX: Mengambil 'div.result-item' karena di Termux ditemukan 36 item di sini.
+        // Kita juga tetap menyertakan 'article.item' sebagai cadangan.
+        return document.select("div.result-item, article.item").mapNotNull {
             toSearchResult(it)
         }
     }
@@ -84,7 +95,7 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
     // 3. LOAD DETAIL
     // ==============================
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = standardHeaders).document
+        val document = app.get(url, headers = headers).document
 
         val title = document.selectFirst("h1")?.text()?.trim() ?: "Unknown"
 
@@ -113,7 +124,7 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
     }
 
     // ==============================
-    // 4. LOAD LINKS (PARALLEL FIX)
+    // 4. LOAD LINKS (PARALLEL LOADING)
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -121,17 +132,17 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = standardHeaders).document
+        val document = app.get(data, headers = headers).document
 
         val potentialLinks = mutableListOf<String>()
 
         document.select("#playeroptionsul li a").forEach { link ->
-            val href = fixUrl(link.attr("href")) // Gunakan fixUrl
+            val href = fixUrl(link.attr("href"))
             if (href.startsWith("http")) potentialLinks.add(href)
         }
 
         document.select("#playcontainer iframe").forEach { iframe ->
-            val src = fixUrl(iframe.attr("src")) // Gunakan fixUrl
+            val src = fixUrl(iframe.attr("src"))
             if (src.startsWith("http")) potentialLinks.add(src)
         }
 
@@ -151,7 +162,7 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
         if (potentialLinks.isNotEmpty()) {
             val sortedLinks = potentialLinks.sortedBy { getServerPriority(it) }
 
-            // Menggunakan coroutineScope untuk memproses link secara paralel
+            // Parallel loading agar cepat
             coroutineScope {
                 sortedLinks.map { link ->
                     launch(Dispatchers.IO) {
@@ -165,6 +176,7 @@ import kotlinx.coroutines.* class MangoPorn : MainAPI() {
             }
             return true
         }
+
         return false
     }
 }
