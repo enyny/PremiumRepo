@@ -28,7 +28,8 @@ class Kuramanime : MainAPI() {
         val url = request.data + page
         val document = app.get(url).document
         
-        val home = document.select(".filter__gallery > a").mapNotNull { element ->
+        // Selector disesuaikan agar lebih spesifik
+        val home = document.select("div.filter__gallery > a").mapNotNull { element ->
             toSearchResult(element)
         }
 
@@ -37,20 +38,32 @@ class Kuramanime : MainAPI() {
 
     private fun toSearchResult(element: Element): SearchResponse? {
         val title = element.selectFirst("h5.sidebar-title-h5")?.text()?.trim() ?: return null
-        var href = fixUrl(element.attr("href"))
         
-        if (href.contains("/episode/")) {
-            val epsIndex = href.indexOf("/episode/")
-            href = href.substring(0, epsIndex)
+        // FIX: Jangan hapus bagian '/episode/' agar load() membuka halaman yang memiliki list episode
+        val href = fixUrl(element.attr("href"))
+        
+        // FIX GAMBAR: Mencoba beberapa cara pengambilan gambar agar tidak duplikat/kosong
+        val imageDiv = element.selectFirst(".product__sidebar__view__item")
+        var posterUrl = imageDiv?.attr("data-setbg")
+        
+        // Fallback 1: Jika data-setbg kosong, coba cek style background-image
+        if (posterUrl.isNullOrEmpty()) {
+            val style = imageDiv?.attr("style") ?: ""
+            if (style.contains("url(")) {
+                posterUrl = style.substringAfter("url(").substringBefore(")")
+                    .replace("\"", "").replace("'", "")
+            }
+        }
+        
+        // Fallback 2: Coba cari tag img di dalam (kadang struktur berubah)
+        if (posterUrl.isNullOrEmpty()) {
+            posterUrl = element.selectFirst("img")?.attr("src")
         }
 
-        val imageDiv = element.selectFirst(".product__sidebar__view__item")
-        val posterUrl = imageDiv?.attr("data-setbg")
-        val epText = element.selectFirst(".ep")?.text()
+        val epText = element.selectFirst(".ep")?.text()?.trim()
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            // PERBAIKAN ERROR 1: Cek null sebelum addQuality
             if (epText != null) {
                 addQuality(epText)
             }
@@ -60,7 +73,7 @@ class Kuramanime : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/anime?search=$query&order_by=latest"
         val document = app.get(url).document
-        return document.select(".filter__gallery > a").mapNotNull {
+        return document.select("div.filter__gallery > a").mapNotNull {
             toSearchResult(it)
         }
     }
@@ -71,21 +84,35 @@ class Kuramanime : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.select("meta[property=og:title]").attr("content")
-            .replace("Subtitle Indonesia - Kuramanime", "")
-            .replace(Regex("\\(Episode.*\\)"), "")
+        // FIX JUDUL: Membersihkan judul dari SEO spam yang terlihat di screenshot
+        // Contoh: "Jujutsu Kaisen ... (Episode 06) Subtitle Indonesia" -> "Jujutsu Kaisen ..."
+        var rawTitle = document.selectFirst("title")?.text() ?: ""
+        if (rawTitle.isEmpty()) {
+            rawTitle = document.select("meta[property=og:title]").attr("content")
+        }
+        
+        val title = rawTitle
+            .replace(Regex("\\(Episode\\s+\\d+\\).*"), "") // Hapus (Episode XX)...
+            .replace(Regex("Episode\\s+\\d+.*"), "") // Hapus Episode XX...
+            .replace("Subtitle Indonesia", "", true)
+            .replace("- Kuramanime", "")
             .trim()
 
         val poster = document.select("meta[property=og:image]").attr("content")
+        
+        // Deskripsi (Meta description sering spam keyword, tapi lebih baik daripada kosong)
         val description = document.select("meta[name=description]").attr("content")
 
-        // PERBAIKAN ERROR 2: Menggunakan newEpisode()
+        // FIX EPISODE: Mengambil episode dari halaman Watch Page (karena URL tidak kita potong)
+        // Selector: div#animeEpisodes -> a.ep-button
         val episodes = document.select("#animeEpisodes a.ep-button").mapNotNull { ep ->
             val epUrl = fixUrl(ep.attr("href"))
-            val epName = ep.text().trim()
-            val epNum = Regex("\\d+").find(epName)?.value?.toIntOrNull()
+            val epName = ep.text().trim() // Contoh: "Ep 6"
+            
+            // Ambil angka dari "Ep 6" -> 6
+            val epNum = Regex("(?i)Ep\\s*(\\d+)").find(epName)?.groupValues?.get(1)?.toIntOrNull() 
+                ?: Regex("\\d+").find(epName)?.value?.toIntOrNull()
 
-            // Gunakan builder pattern newEpisode
             newEpisode(epUrl) {
                 this.name = epName
                 this.episode = epNum
@@ -96,8 +123,13 @@ class Kuramanime : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             
-            // PERBAIKAN ERROR 3: Menambahkan DubStatus (Subbed) sebagai parameter pertama
-            addEpisodes(DubStatus.Subbed, episodes)
+            // Jika episode ditemukan, tambahkan.
+            if (episodes.isNotEmpty()) {
+                addEpisodes(DubStatus.Subbed, episodes)
+            } else {
+                // Debugging: Jika kosong, mungkin struktur berubah atau server mendeteksi bot
+                // Tapi harusnya aman karena kita pakai URL halaman nonton
+            }
         }
     }
 
@@ -112,14 +144,18 @@ class Kuramanime : MainAPI() {
     ): Boolean {
         
         val document = app.get(data).document
+        
+        // Ambil server dari dropdown
         val serverOptions = document.select("select#changeServer option")
 
         serverOptions.forEach { option ->
             val serverName = option.text()
             val serverValue = option.attr("value")
             
-            if (serverValue == "kuramadrive" && serverName.contains("vip", true)) return@forEach
+            // Skip server VIP/Premium jika ada
+            if (serverValue.contains("kuramadrive") && serverName.contains("vip", true)) return@forEach
 
+            // Request ulang dengan parameter server
             val serverUrl = "$data?server=$serverValue"
             
             try {
