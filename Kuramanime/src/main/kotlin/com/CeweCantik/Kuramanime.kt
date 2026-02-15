@@ -1,143 +1,220 @@
 package com.CeweCantik
 
+import android.content.Context
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.extractors.StreamSB
+import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.extractors.FilemoonV2
 import com.lagradost.cloudstream3.extractors.Filesim
-import com.fasterxml.jackson.annotation.JsonProperty
-import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.extractors.StreamSB
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 
-class Kuramanime : MainAPI() {
-    override var mainUrl = "https://v8.kuramanime.blog"
+@CloudstreamPlugin
+class KuramanimeProviderPlugin : Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(KuramanimeProvider())
+        registerExtractorAPI(Nyomo())
+        registerExtractorAPI(Streamhide())
+        registerExtractorAPI(Kuramadrive())
+        registerExtractorAPI(Lbx())
+        registerExtractorAPI(Sunrong())
+    }
+}
+
+class KuramanimeProvider : MainAPI() {
+    override var mainUrl = "https://v5.kuramanime.blog"
     override var name = "Kuramanime"
+    override val hasQuickSearch = false
     override val hasMainPage = true
     override var lang = "id"
+    override var sequentialMainPage = true
     override val hasDownloadSupport = true
-    
-    // Auth default dari file referensi, akan diupdate otomatis oleh fetchAuth()
-    private var authorization: String? = "KFhElffuFYZZHAqqBqlGewkwbaaFUtJS"
-    
+    var authorization: String? = "KFhElffuFYZZHAqqBqlGewkwbaaFUtJS"
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
         TvType.OVA
     )
 
-    // User-Agent Desktop (Windows) agar server memberikan HTML lengkap
-    private val commonUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    companion object {
+        private var cookies: Map<String, String> = mapOf()
 
-    // ================= HELPER FUNCTIONS =================
-    
-    private fun getHeaders(referer: String = mainUrl): Map<String, String> {
-        return mapOf(
-            "User-Agent" to commonUserAgent,
-            "Referer" to referer,
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Upgrade-Insecure-Requests" to "1"
-        )
+        fun getType(t: String, s: Int): TvType {
+            return if (t.contains("OVA", true) || t.contains("Special")) TvType.OVA
+            else if (t.contains("Movie", true) && s == 1) TvType.AnimeMovie
+            else TvType.Anime
+        }
+
+        fun getStatus(t: String): ShowStatus {
+            return when (t) {
+                "Selesai Tayang" -> ShowStatus.Completed
+                "Sedang Tayang" -> ShowStatus.Ongoing
+                else -> ShowStatus.Completed
+            }
+        }
     }
 
-    private fun Element.getImageUrl(): String? {
-        return this.attr("data-setbg").ifEmpty { this.attr("src") }
+    override val mainPage = mainPageOf(
+        "$mainUrl/anime/ongoing?order_by=updated&page=" to "Sedang Tayang",
+        "$mainUrl/anime/finished?order_by=updated&page=" to "Selesai Tayang",
+        "$mainUrl/properties/season/summer-2022?order_by=most_viewed&page=" to "Dilihat Terbanyak Musim Ini",
+        "$mainUrl/anime/movie?order_by=updated&page=" to "Film Layar Lebar",
+    )
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val document = app.get(request.data + page).document
+        val home = document.select("div#animeList div.product__item").mapNotNull {
+            it.toSearchResult()
+        }
+
+        return newHomePageResponse(request.name, home)
     }
 
-    // ================= MAIN PAGE & SEARCH =================
+    private fun getProperAnimeLink(uri: String): String {
+        return if (uri.contains("/episode")) {
+            Regex("(.*)/episode/.+").find(uri)?.groupValues?.get(1).toString() + "/"
+        } else {
+            uri
+        }
+    }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val homePageList = ArrayList<HomePageList>()
+    private fun Element.toSearchResult(): AnimeSearchResponse? {
+        val href = getProperAnimeLink(fixUrl(this.selectFirst("a")!!.attr("href")))
+        val title = this.selectFirst("h5 a")?.text() ?: return null
+        val posterUrl = fixUrl(this.select("div.product__item__pic.set-bg").attr("data-setbg"))
+        val episode = this.select("div.ep span").text().let {
+            Regex("Ep\\s(\\d+)\\s/").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
 
-        // Mengambil Ongoing (Sedang Tayang)
-        val ongoingDoc = app.get("$mainUrl/quick/ongoing?order_by=latest&page=$page", headers = getHeaders()).document
-        val ongoingList = ongoingDoc.select("div.product__item").mapNotNull { it.toSearchResult() }
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = posterUrl
+            addSub(episode)
+        }
 
-        // Mengambil Terbaru (Updated)
-        val latestDoc = app.get("$mainUrl/anime?order_by=updated&page=$page", headers = getHeaders()).document
-        val latestList = latestDoc.select("div.product__item").mapNotNull { it.toSearchResult() }
-
-        if (ongoingList.isNotEmpty()) homePageList.add(HomePageList("Sedang Tayang", ongoingList))
-        if (latestList.isNotEmpty()) homePageList.add(HomePageList("Baru Diupdate", latestList))
-
-        if (homePageList.isEmpty()) throw ErrorLoadingException("Gagal memuat data dari $mainUrl")
-
-        return newHomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/anime?search=$query&order_by=latest"
-        val document = app.get(url, headers = getHeaders()).document
-        return document.select("div.product__item").mapNotNull { it.toSearchResult() }
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst(".product__item__text h5 a")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val image = this.selectFirst(".product__item__pic")?.getImageUrl()
-        val epText = this.selectFirst(".ep")?.text()?.trim() ?: ""
-        
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = image
-            addQuality(epText)
+        return app.get(
+            "$mainUrl/anime?search=$query&order_by=latest"
+        ).document.select("div#animeList div.product__item").mapNotNull {
+            it.toSearchResult()
         }
     }
-
-    // ================= LOAD DETAILS =================
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = getHeaders()).document
+        val document = app.get(url).document
 
-        val title = document.selectFirst(".anime__details__title h3")?.text()?.trim() ?: "Unknown"
-        val poster = document.selectFirst(".anime__details__pic")?.getImageUrl()
-        val synopsis = document.selectFirst(".anime__details__text p")?.text()?.trim()
+        val title = document.selectFirst(".anime__details__title > h3")!!.text().trim()
+        val poster = document.selectFirst(".anime__details__pic")?.attr("data-setbg")
+        val tags =
+            document.select("div.anime__details__widget > div > div:nth-child(2) > ul > li:nth-child(1)")
+                .text().trim().replace("Genre: ", "").split(", ")
 
-        var type = TvType.Anime
-        var status = ShowStatus.Ongoing
-        var year: Int? = null
+        val year = Regex("\\D").replace(
+            document.select("div.anime__details__widget > div > div:nth-child(1) > ul > li:nth-child(5)")
+                .text().trim().replace("Musim: ", ""), ""
+        ).toIntOrNull()
+        val status = getStatus(
+            document.select("div.anime__details__widget > div > div:nth-child(1) > ul > li:nth-child(3)")
+                .text().trim().replace("Status: ", "")
+        )
+        val description = document.select(".anime__details__text > p").text().trim()
 
-        document.select(".anime__details__widget ul li").forEach { li ->
-            val text = li.text()
-            if (text.contains("Tipe", true) && text.contains("Movie", true)) type = TvType.AnimeMovie
-            if (text.contains("Status", true) && (text.contains("Selesai", true) || text.contains("Finished", true))) status = ShowStatus.Completed
-            if (text.contains("Musim", true)) {
-                Regex("(\\d{4})").find(text)?.groupValues?.get(1)?.toIntOrNull()?.let { year = it }
+        val episodes = mutableListOf<Episode>()
+
+        for (i in 1..30) {
+            val doc = app.get("$url?page=$i").document
+            val eps = Jsoup.parse(doc.select("#episodeLists").attr("data-content"))
+                .select("a.btn.btn-sm.btn-danger")
+                .mapNotNull {
+                    val name = it.text().trim()
+                    val episode = Regex("(\\d+[.,]?\\d*)").find(name)?.groupValues?.getOrNull(0)
+                        ?.toIntOrNull()
+                    val link = it.attr("href")
+                    newEpisode(link) { this.episode = episode }
+                }
+            if (eps.isEmpty()) break else episodes.addAll(eps)
+        }
+
+        val type = getType(
+            document.selectFirst("div.col-lg-6.col-md-6 ul li:contains(Tipe:) a")?.text()
+                ?.lowercase() ?: "tv", episodes.size
+        )
+        val recommendations = document.select("div#randomList > a").mapNotNull {
+            val epHref = it.attr("href")
+            val epTitle = it.select("h5.sidebar-title-h5.px-2.py-2").text()
+            val epPoster = it.select(".product__sidebar__view__item.set-bg").attr("data-setbg")
+            newAnimeSearchResponse(epTitle, epHref, TvType.Anime) {
+                this.posterUrl = epPoster
+                addDubStatus(dubExist = false, subExist = true)
             }
         }
 
-        val episodes = ArrayList<Episode>()
-        
-        // Cek apakah ada pagination episode (Logic dari file referensi)
-        val episodeListContent = document.select("#episodeLists").attr("data-content")
-        if (episodeListContent.isNotEmpty()) {
-             val epDoc = Jsoup.parse(episodeListContent)
-             epDoc.select("a.btn").forEach { 
-                 val epNum = Regex("(\\d+)").find(it.text())?.groupValues?.get(1)?.toIntOrNull()
-                 episodes.add(newEpisode(it.attr("href")) {
-                     this.name = it.text()
-                     this.episode = epNum
-                 })
-             }
-        } else {
-            // Fallback ke list biasa
-            document.select("#episodeLists a").forEach {
-                val epNum = Regex("Episode\\s+(\\d+)").find(it.text())?.groupValues?.get(1)?.toIntOrNull()
-                episodes.add(newEpisode(it.attr("href")) {
-                    this.name = it.text()
-                    this.episode = epNum
-                })
-            }
-        }
+        val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
 
         return newAnimeLoadResponse(title, url, type) {
-            this.posterUrl = poster
-            this.plot = synopsis
+            engName = title
+            posterUrl = tracker?.image ?: poster
+            backgroundPosterUrl = tracker?.cover
             this.year = year
-            this.showStatus = status
-            addEpisodes(DubStatus.Subbed, episodes.reversed())
+            addEpisodes(DubStatus.Subbed, episodes)
+            showStatus = status
+            plot = description
+            this.tags = tags
+            this.recommendations = recommendations
+            addMalId(tracker?.malId)
+            addAniListId(tracker?.aniId?.toIntOrNull())
         }
+
     }
 
-    // ================= LOAD LINKS (THE BEAST / LEVIATHAN LOGIC) =================
+    private suspend fun invokeLocalSource(
+        url: String,
+        server: String,
+        headers: Map<String, String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val document = app.post(
+            url,
+            data = mapOf("authorization" to getAuth()),
+            headers = headers,
+            cookies = cookies
+        ).document
+        document.select("video#player > source").map {
+            val link = fixUrl(it.attr("src"))
+            val quality = it.attr("size").toIntOrNull()
+            callback.invoke(
+                newExtractorLink(
+                    fixTitle(server),
+                    fixTitle(server),
+                    link,
+                    INFER_TYPE
+                ) {
+                    this.headers = mapOf(
+                        "Accept" to "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
+                        "Range" to "bytes=0-",
+                        "Sec-Fetch-Dest" to "video",
+                        "Sec-Fetch-Mode" to "no-cors",
+                    )
+                    this.quality = quality ?: Qualities.Unknown.value
+                }
+            )
+        }
+        if (server == "kuramadrive") {
+            document.select("div#animeDownloadLink a").amap {
+                loadExtractor(it.attr("href"), "$mainUrl/", subtitleCallback, callback)
+            }
+        }
+    }
 
     override suspend fun loadLinks(
         data: String,
@@ -145,151 +222,92 @@ class Kuramanime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val req = app.get(data, headers = getHeaders())
-        val doc = req.document
-        val cookies = req.cookies
 
-        val csrfToken = doc.selectFirst("meta[name=csrf-token]")?.attr("content") 
-            ?: return false
-        
-        // 1. Ambil script 'data-kk' untuk mendapatkan kunci rahasia
-        val dataKk = doc.selectFirst("div[data-kk]")?.attr("data-kk") 
-            ?: doc.selectFirst("div.col-lg-12.mt-3")?.attr("data-kk") // Fallback
-            ?: return false
+        val req = app.get(data)
+        val res = req.document
+        cookies = req.cookies
 
-        val assets = getAssets(dataKk)
+        val token = res.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
+        val dataKps = res.selectFirst("div.col-lg-12.mt-3")?.attr("data-kk") ?: return false
 
-        // 2. Dapatkan Token Halaman
+        val assets = getAssets(dataKps)
+
         var headers = mapOf(
-            "X-CSRF-TOKEN" to csrfToken,
+            "X-CSRF-TOKEN" to token,
             "X-Fuck-ID" to "${assets.MIX_AUTH_KEY}:${assets.MIX_AUTH_TOKEN}",
             "X-Request-ID" to randomId(),
             "X-Request-Index" to "0",
             "X-Requested-With" to "XMLHttpRequest",
-            "User-Agent" to commonUserAgent,
-            "Referer" to data
         )
 
-        val tokenUrl = "$mainUrl/${assets.MIX_PREFIX_AUTH_ROUTE_PARAM}${assets.MIX_AUTH_ROUTE_PARAM}"
-        val tokenKey = app.get(tokenUrl, headers = headers, cookies = cookies).text
+        val tokenKey = app.get(
+            "$mainUrl/${assets.MIX_PREFIX_AUTH_ROUTE_PARAM}${assets.MIX_AUTH_ROUTE_PARAM}",
+            headers = headers,
+            cookies = cookies
+        ).text
 
-        // 3. Loop semua server dan POST request
         headers = mapOf(
-            "X-CSRF-TOKEN" to csrfToken,
+            "X-CSRF-TOKEN" to token,
             "X-Requested-With" to "XMLHttpRequest",
-            "User-Agent" to commonUserAgent,
-            "Referer" to data
         )
 
-        doc.select("select#changeServer option").forEach { source ->
+        res.select("select#changeServer option").amap { source ->
             val server = source.attr("value")
-            if (server.isBlank()) return@forEach
-
-            val link = "$data?${assets.MIX_PAGE_TOKEN_KEY}=$tokenKey&${assets.MIX_STREAM_SERVER_KEY}=$server"
-            
-            try {
-                if (server.contains("kuramadrive", true) || server.contains("archive", true)) {
-                    invokeLocalSource(link, server, headers, cookies, subtitleCallback, callback)
-                } else {
-                    val postRes = app.post(
-                        link,
-                        data = mapOf("authorization" to getAuth()),
-                        referer = data,
-                        headers = headers,
-                        cookies = cookies
-                    )
-                    
-                    val iframeSrc = postRes.document.select("div.iframe-container iframe").attr("src")
-                    if (iframeSrc.isNotEmpty()) {
-                        loadExtractor(iframeSrc, "$mainUrl/", subtitleCallback, callback)
-                    }
+            val link =
+                "$data?${assets.MIX_PAGE_TOKEN_KEY}=$tokenKey&${assets.MIX_STREAM_SERVER_KEY}=$server"
+            if (server.contains(Regex("(?i)kuramadrive|archive"))) {
+                invokeLocalSource(link, server, headers, subtitleCallback, callback)
+            } else {
+                app.post(
+                    link,
+                    data = mapOf("authorization" to getAuth()),
+                    referer = data,
+                    headers = headers,
+                    cookies = cookies
+                ).document.select("div.iframe-container iframe").attr("src").let { videoUrl ->
+                    loadExtractor(fixUrl(videoUrl), "$mainUrl/", subtitleCallback, callback)
                 }
-            } catch (e: Exception) {
-                // Ignore failed servers
             }
         }
+
+
         return true
     }
 
-    // ================= AUTH & ASSETS LOGIC =================
-
-    private suspend fun invokeLocalSource(
-        url: String,
-        server: String,
-        headers: Map<String, String>,
-        cookies: Map<String, String>,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val doc = app.post(
-            url,
-            data = mapOf("authorization" to getAuth()),
-            headers = headers,
-            cookies = cookies
-        ).document
-
-        doc.select("video#player > source").forEach {
-            val link = it.attr("src")
-            val qualityInt = it.attr("size").toIntOrNull() ?: Qualities.Unknown.value
-            
-            // PERBAIKAN: Menggunakan lambda initializer untuk parameter quality
-            callback.invoke(
-                newExtractorLink(
-                    source = name,
-                    name = "$name $server",
-                    url = link,
-                    type = INFER_TYPE
-                ) {
-                    this.quality = qualityInt
-                }
-            )
-        }
-    }
-
-    data class Assets(
-        val MIX_PREFIX_AUTH_ROUTE_PARAM: String,
-        val MIX_AUTH_ROUTE_PARAM: String,
-        val MIX_AUTH_KEY: String,
-        val MIX_AUTH_TOKEN: String,
-        val MIX_PAGE_TOKEN_KEY: String,
-        val MIX_STREAM_SERVER_KEY: String,
-    )
-
-    private suspend fun getAssets(bpjs: String): Assets {
-        val jsUrl = "$mainUrl/assets/js/$bpjs.js"
-        val env = app.get(jsUrl, headers = mapOf("User-Agent" to commonUserAgent)).text
-        
-        fun getVar(name: String): String {
-            return env.substringAfter("$name: '").substringBefore("',")
-        }
-
+    private suspend fun getAssets(bpjs: String?): Assets {
+        val env = app.get("$mainUrl/assets/js/$bpjs.js").text
+        val MIX_PREFIX_AUTH_ROUTE_PARAM =
+            env.substringAfter("MIX_PREFIX_AUTH_ROUTE_PARAM: '").substringBefore("',")
+        val MIX_AUTH_ROUTE_PARAM =
+            env.substringAfter("MIX_AUTH_ROUTE_PARAM: '").substringBefore("',")
+        val MIX_AUTH_KEY = env.substringAfter("MIX_AUTH_KEY: '").substringBefore("',")
+        val MIX_AUTH_TOKEN = env.substringAfter("MIX_AUTH_TOKEN: '").substringBefore("',")
+        val MIX_PAGE_TOKEN_KEY = env.substringAfter("MIX_PAGE_TOKEN_KEY: '").substringBefore("',")
+        val MIX_STREAM_SERVER_KEY =
+            env.substringAfter("MIX_STREAM_SERVER_KEY: '").substringBefore("',")
         return Assets(
-            getVar("MIX_PREFIX_AUTH_ROUTE_PARAM"),
-            getVar("MIX_AUTH_ROUTE_PARAM"),
-            getVar("MIX_AUTH_KEY"),
-            getVar("MIX_AUTH_TOKEN"),
-            getVar("MIX_PAGE_TOKEN_KEY"),
-            getVar("MIX_STREAM_SERVER_KEY")
+            MIX_PREFIX_AUTH_ROUTE_PARAM,
+            MIX_AUTH_ROUTE_PARAM,
+            MIX_AUTH_KEY,
+            MIX_AUTH_TOKEN,
+            MIX_PAGE_TOKEN_KEY,
+            MIX_STREAM_SERVER_KEY
         )
     }
 
-    private suspend fun getAuth(): String {
-        return fetchAuth()
+    suspend fun getAuth(): String {
+        return authorization ?: fetchAuth().also { authorization = it }
     }
 
-    private suspend fun fetchAuth(): String {
-        val url = "$mainUrl/storage/leviathan.js?v=942"
-        val res = app.get(url, headers = mapOf("User-Agent" to commonUserAgent)).text
-        
-        val authMatch = Regex("""=\s*\[(.*?)]""").find(res)
-        val authList = authMatch?.groupValues?.get(1)
+    suspend fun fetchAuth(): String {
+        val url = "$mainUrl/storage/leviathan.js?v=512"
+        val res = app.get(url).text
+        val auth = Regex("""=\s*\[(.*?)]""").find(res)?.groupValues?.get(1)
             ?.split(",")
             ?.map { it.trim().removeSurrounding("'").removeSurrounding("\"") }
-            ?: throw ErrorLoadingException("Gagal parse Leviathan Auth")
+            ?: throw ErrorLoadingException()
 
-        if (authList.size < 10) return "KFhElffuFYZZHAqqBqlGewkwbaaFUtJS" 
-
-        return "${authList.last()}${authList[9]}${authList[1]}${authList.first()}i"
+        return "${auth.last()}${auth[9]}${auth[1]}${auth.first()}i"
     }
 
     private fun randomId(length: Int = 6): String {
@@ -298,9 +316,19 @@ class Kuramanime : MainAPI() {
             .map { allowedChars.random() }
             .joinToString("")
     }
+
+    data class Assets(
+        val MIX_PREFIX_AUTH_ROUTE_PARAM: String?,
+        val MIX_AUTH_ROUTE_PARAM: String?,
+        val MIX_AUTH_KEY: String?,
+        val MIX_AUTH_TOKEN: String?,
+        val MIX_PAGE_TOKEN_KEY: String?,
+        val MIX_STREAM_SERVER_KEY: String?,
+    )
+
 }
 
-// ================= CUSTOM EXTRACTORS =================
+// --- Extractors ---
 
 class Sunrong : FilemoonV2() {
     override var mainUrl = "https://sunrong.my.id"
@@ -329,8 +357,93 @@ open class Lbx : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val token = Regex("""(?:/f/|/file/|\?id=)(\w+)""").find(url)?.groupValues?.get(1)
+        val id =
+            app.get("$realUrl/api/file/share_out_list/?sortField=utime&sortAsc=0&pageNo=1&pageSize=50&shareToken=$token")
+                .parsedSafe<Responses>()?.data?.itemId
+        app.get("$realUrl/api/file/detail?itemId=$id", referer = url)
+            .parsedSafe<Responses>()?.data?.itemInfo?.resolutionList?.map { link ->
+                callback.invoke(
+                    newExtractorLink(
+                        name,
+                        name,
+                        link.url ?: return@map null,
+                        INFER_TYPE
+                    ) {
+                        this.referer = "$realUrl/"
+                        this.quality = getQualityFromName(link.resolution)
+                    }
+                )
+            }
+    }
+
+    data class Resolutions(
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("resolution") val resolution: String? = null,
+    )
+
+    data class ItemInfo(
+        @JsonProperty("resolutionList") val resolutionList: ArrayList<Resolutions>? = arrayListOf(),
+    )
+
+    data class Data(
+        @JsonProperty("itemInfo") val itemInfo: ItemInfo? = null,
+        @JsonProperty("itemId") val itemId: String? = null,
+    )
+
+    data class Responses(
+        @JsonProperty("data") val data: Data? = null,
+    )
+
+}
+
+open class Kuramadrive : ExtractorApi() {
+    override val name = "DriveKurama"
+    override val mainUrl = "https://kuramadrive.com"
+    override val requiresReferer = true
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val req = app.get(url, referer = referer)
+        val doc = req.document
+
+        val title = doc.select("title").text()
+        val token = doc.select("meta[name=csrf-token]").attr("content")
+        val routeCheckAvl = doc.select("input#routeCheckAvl").attr("value")
+
+        val json = app.get(
+            routeCheckAvl, headers = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "X-CSRF-TOKEN" to token
+            ),
+            referer = url,
+            cookies = req.cookies
+        ).parsedSafe<Source>()
+
         callback.invoke(
-            newExtractorLink(name, name, url, INFER_TYPE)
+            newExtractorLink(
+                name,
+                name,
+                json?.url ?: return,
+                INFER_TYPE
+            ) {
+                this.referer = "$mainUrl/"
+                this.quality = getIndexQuality(title)
+            }
         )
     }
+
+    private fun getIndexQuality(str: String?): Int {
+        return Regex("(\\d{3,4})[pP]").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Qualities.Unknown.value
+    }
+
+    private data class Source(
+        @JsonProperty("url") val url: String,
+    )
+
 }
