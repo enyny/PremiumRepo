@@ -31,7 +31,6 @@ class Kuramanime : MainAPI() {
     data class KuramaResponse(
         @JsonProperty("data") val data: List<KuramaAnime>? = null,
         @JsonProperty("current_page") val currentPage: Int? = null,
-        // Untuk handle respon root yang punya key berbeda
         @JsonProperty("ongoingAnimes") val ongoingAnimes: KuramaPage? = null,
         @JsonProperty("finishedAnimes") val finishedAnimes: KuramaPage? = null,
         @JsonProperty("movieAnimes") val movieAnimes: KuramaPage? = null,
@@ -46,16 +45,16 @@ class Kuramanime : MainAPI() {
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("slug") val slug: String? = null,
         @JsonProperty("synopsis") val synopsis: String? = null,
-        @JsonProperty("image_portrait_url") val imagePortraitUrl: String? = null, // Gambar Tegak
-        @JsonProperty("image_landscape_url") val imageLandscapeUrl: String? = null, // Gambar Lebar
-        @JsonProperty("posts") val posts: List<KuramaPost>? = null, // List Episode
+        @JsonProperty("image_portrait_url") val imagePortraitUrl: String? = null,
+        @JsonProperty("image_landscape_url") val imageLandscapeUrl: String? = null,
+        @JsonProperty("posts") val posts: List<KuramaPost>? = null,
         @JsonProperty("score") val score: Double? = null,
         @JsonProperty("type") val type: String? = null,
     )
 
     data class KuramaPost(
         @JsonProperty("title") val title: String? = null,
-        @JsonProperty("episode") val episode: String? = null, // Bisa string atau int di JSON
+        @JsonProperty("episode") val episode: String? = null,
         @JsonProperty("id") val id: Int? = null,
         @JsonProperty("anime_id") val animeId: Int? = null
     )
@@ -71,16 +70,10 @@ class Kuramanime : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Tambahkan need_json=true agar server membalas dengan JSON
         val url = request.data + page + "&need_json=true"
-        
-        // Request
         val response = app.get(url, headers = commonHeaders).text
-        
-        // Parsing JSON
         val json = parseJson<KuramaResponse>(response)
         
-        // Ambil data (support format direct page atau root object)
         val animeList = json.data 
             ?: json.ongoingAnimes?.data 
             ?: json.finishedAnimes?.data 
@@ -94,21 +87,16 @@ class Kuramanime : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // Ubah anime object dari JSON ke SearchResponse CloudStream
     private fun toSearchResult(anime: KuramaAnime): SearchResponse? {
         val title = anime.title ?: return null
         val id = anime.id ?: return null
         val slug = anime.slug ?: ""
         
-        // Buat URL manual: /anime/{id}/{slug}
         val url = "$mainUrl/anime/$id/$slug"
-        
-        // Ambil gambar kualitas tinggi dari JSON
         val poster = anime.imagePortraitUrl ?: anime.imageLandscapeUrl
 
         return newAnimeSearchResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
-            // Tampilkan info tambahan di kartu
             if (anime.score != null) {
                 addQuality("⭐ ${anime.score}")
             }
@@ -119,7 +107,6 @@ class Kuramanime : MainAPI() {
     // 2. PENCARIAN (SEARCH)
     // ==========================================
     override suspend fun search(query: String): List<SearchResponse> {
-        // Search API juga support JSON
         val url = "$mainUrl/anime?search=$query&order_by=latest&need_json=true"
         val response = app.get(url, headers = commonHeaders).text
         val json = parseJson<KuramaResponse>(response)
@@ -131,42 +118,20 @@ class Kuramanime : MainAPI() {
     // 3. DETAIL ANIME & EPISODE (LOAD)
     // ==========================================
     override suspend fun load(url: String): LoadResponse {
-        // Request Detail dengan JSON
-        // Contoh: .../anime/4484/seihantai...?need_json=true
         val jsonUrl = "$url?need_json=true"
-        
-        // Parsing JSON
-        // Perhatikan: Kadang detail page JSON-nya langsung object Anime, kadang dibungkus.
-        // Kita coba parse aman.
         val responseText = app.get(jsonUrl, headers = commonHeaders).text
         
-        // Manual parsing sedikit jika struktur detail berbeda dengan list
-        // Tapi biasanya struktur "KuramaAnime" di atas sudah mencakup detail (ada 'posts')
-        // Kita coba parse sebagai KuramaAnime langsung, atau cari wrapper.
-        // *Fallback logic*: Jika gagal parse JSON, kita pakai metode HTML sebagai cadangan.
-        
         try {
-            // Coba anggap response adalah objek anime langsung (karena biasanya detail API begitu)
-            // Atau mungkin dibungkus keys tertentu.
-            // Berdasarkan curl user, 'posts' ada di dalam objek anime.
-            // Kita coba parse generic dulu
-            
-            // NOTE: Karena saya tidak melihat raw JSON response untuk *Halaman Detail*, 
-            // Saya asumsikan field-nya mirip dengan item di Home (KuramaAnime).
-            // Jika error, blok 'catch' akan menangani dengan HTML parsing.
             val anime = parseJson<KuramaAnime>(responseText)
             
             val title = anime.title ?: "Unknown Title"
             val poster = anime.imagePortraitUrl ?: anime.imageLandscapeUrl
             val synopsis = anime.synopsis ?: ""
             
-            // Ambil Episode dari 'posts' array di JSON
             val episodes = anime.posts?.mapNotNull { post ->
                 val epNum = post.episode?.toString()?.toIntOrNull()
                 val epTitle = post.title ?: "Episode $epNum"
                 
-                // URL Episode: /anime/{anime_id}/{slug}/episode/{episode_num}
-                // Kita perlu slug. Jika di detail JSON tidak ada slug (jarang terjadi), kita bisa extract dari URL input.
                 val safeSlug = anime.slug ?: url.split("/").getOrElse(5) { "" }
                 val epUrl = "$mainUrl/anime/${anime.id}/$safeSlug/episode/$epNum"
 
@@ -174,20 +139,24 @@ class Kuramanime : MainAPI() {
                     this.name = epTitle
                     this.episode = epNum
                 }
-            }?.reversed() ?: emptyList() // Reverse biar ep terbaru di atas
+            }?.reversed() ?: emptyList()
 
             return newAnimeLoadResponse(title, url, TvType.Anime) {
                 this.posterUrl = poster
                 this.plot = synopsis
-                this.rating = anime.score?.toInt()
+                
+                // PERBAIKAN: Ganti 'rating' (int) dengan 'addRating' (string) agar tidak error
+                if (anime.score != null) {
+                    addRating(anime.score.toString())
+                }
+                
                 if (episodes.isNotEmpty()) {
                     addEpisodes(DubStatus.Subbed, episodes)
                 }
             }
 
         } catch (e: Exception) {
-            // FALLBACK KE HTML PARSING (Metode Lama yang sudah diperbaiki headernya)
-            // Ini jalan kalau format JSON detail beda dengan dugaan kita
+            // Fallback HTML Parsing
             val document = app.get(url, headers = commonHeaders).document
             
             val title = document.select("meta[property=og:title]").attr("content")
@@ -227,7 +196,11 @@ class Kuramanime : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        // Gunakan header AJAX untuk load video player
+        val ajaxHeaders = commonHeaders + mapOf(
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Dest" to "empty"
+        )
+
         val document = app.get(data, headers = commonHeaders).document
         val serverOptions = document.select("select#changeServer option")
 
@@ -239,8 +212,7 @@ class Kuramanime : MainAPI() {
 
                 val serverUrl = "$data?server=$serverValue"
                 try {
-                    // Request ulang dengan header yang benar
-                    val doc = app.get(serverUrl, headers = commonHeaders).document
+                    val doc = app.get(serverUrl, headers = ajaxHeaders).document
                     val iframe = doc.select("iframe").attr("src")
                     if (iframe.isNotBlank()) {
                         loadExtractor(iframe, data, subtitleCallback, callback)
@@ -248,7 +220,6 @@ class Kuramanime : MainAPI() {
                 } catch (e: Exception) {}
             }
         } else {
-            // Fallback iframe langsung
             document.select("iframe").forEach { iframe ->
                 val src = iframe.attr("src")
                 if (src.isNotBlank()) {
