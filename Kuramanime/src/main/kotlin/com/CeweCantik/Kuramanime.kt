@@ -21,6 +21,7 @@ class KuramanimeProvider : MainAPI() {
     override var sequentialMainPage = true
     override val hasDownloadSupport = true
     
+    // Kita simpan token sakti di sini
     var authorization : String? = null 
 
     override val supportedTypes = setOf(
@@ -161,6 +162,7 @@ class KuramanimeProvider : MainAPI() {
         }
     }
 
+    // Mengirim PID dan SID ke Extractor (Kuramadrive)
     private suspend fun invokeLocalSource(
         pid: String,
         document: org.jsoup.nodes.Document,
@@ -169,11 +171,11 @@ class KuramanimeProvider : MainAPI() {
     ) {
         val html = document.html()
         
-        // Pola regex diperbanyak untuk menangkap 'sid' di berbagai format JS/HTML
+        // Cari SID menggunakan Regex yang lebih luas
         val possiblePatterns = listOf(
-            Regex("""["']?sid["']?\s*[:=]\s*["']?(\d+)["']?"""), // JSON atau JS object: "sid": 123
-            Regex("""sid\s*=\s*["']?(\d+)["']?"""), // Variable JS: sid = 123
-            Regex("""data-sid\s*=\s*["'](\d+)["']""") // Attribute HTML: data-sid="123"
+            Regex("""["']?sid["']?\s*[:=]\s*["']?(\d+)["']?"""), 
+            Regex("""sid\s*=\s*["']?(\d+)["']?"""), 
+            Regex("""data-sid\s*=\s*["'](\d+)["']""") 
         )
 
         var sid: String? = null
@@ -183,6 +185,7 @@ class KuramanimeProvider : MainAPI() {
         }
 
         if (pid.isNotEmpty() && !sid.isNullOrEmpty()) {
+            // Buat URL palsu berisi PID dan SID
             val link = "$mainUrl/kuramadrive?pid=$pid&sid=$sid"
             loadExtractor(link, "$mainUrl/", subtitleCallback, callback)
         }
@@ -204,48 +207,49 @@ class KuramanimeProvider : MainAPI() {
         val dataKps = res.selectFirst("div[data-kk]")?.attr("data-kk") ?: return false
         val assets = getAssets(dataKps)
 
-        // Header awal untuk get TokenKey (mirip curl Ks6sqSgloPTlHMl.txt)
+        // 1. Ambil Token Key (Langkah 3 di Termux)
         val initHeaders = mapOf(
             "X-CSRF-TOKEN" to token,
-            "X-Fuck-ID" to "${assets.MIX_AUTH_KEY}:${assets.MIX_AUTH_TOKEN}", // Header ini hanya dipakai di sini
+            "X-Fuck-ID" to "${assets.MIX_AUTH_KEY}:${assets.MIX_AUTH_TOKEN}",
             "X-Request-ID" to randomId(),
             "X-Request-Index" to "0",
             "X-Requested-With" to "XMLHttpRequest",
         )
 
-        val authScriptPath = res.selectFirst("#tokenAuthJs")?.attr("value")
-        
         val tokenKey = app.get(
             "$mainUrl/${assets.MIX_PREFIX_AUTH_ROUTE_PARAM}${assets.MIX_AUTH_ROUTE_PARAM}",
             headers = initHeaders,
             cookies = cookies
         ).text
 
-        // Header bersih untuk request Player (mirip curl user ke /episode/1)
+        // 2. Siapkan Header Bersih untuk Player (Langkah 5 di Termux)
         val playerHeaders = mapOf(
             "X-CSRF-TOKEN" to token,
             "X-Requested-With" to "XMLHttpRequest",
         )
 
-        authorization = fetchAuth(authScriptPath)
+        // 3. Ambil Auth Key SAKTI
+        authorization = getAuth()
 
         res.select("select#changeServer option").amap { source ->
             val server = source.attr("value")
             val link =
                 "$data?${assets.MIX_PAGE_TOKEN_KEY}=$tokenKey&${assets.MIX_STREAM_SERVER_KEY}=$server"
             
-            // Request POST ke server video
+            // 4. Request Player HTML
             val postRes = app.post(
                 link,
                 data = mapOf("authorization" to authorization!!),
                 referer = data,
-                headers = playerHeaders, // Pakai header bersih
+                headers = playerHeaders,
                 cookies = cookies
             ).document
 
             if (server.contains("kuramadrive", true)) {
+                // Jika server adalah Kuramadrive, cari SID
                 invokeLocalSource(pid, postRes, subtitleCallback, callback)
             } else {
+                // Server lain (StreamWish dll)
                 postRes.select("div.iframe-container iframe").attr("src").let { videoUrl ->
                     if(videoUrl.isNotBlank()) {
                          loadExtractor(fixUrl(videoUrl), "$mainUrl/", subtitleCallback, callback)
@@ -278,20 +282,11 @@ class KuramanimeProvider : MainAPI() {
         )
     }
 
+    // Fungsi getAuth langsung mengembalikan kunci yang kita temukan di Termux
     suspend fun getAuth(): String {
-        return authorization ?: fetchAuth(null).also { authorization = it }
-    }
-
-    suspend fun fetchAuth(scriptPath: String?): String {
-        val path = scriptPath ?: "/storage/leviathan.js?v=942" 
-        val url = "$mainUrl$path"
-        val res = app.get(url).text
-        val auth = Regex("""=\s*\[(.*?)]""").find(res)?.groupValues?.get(1)
-            ?.split(",")
-            ?.map { it.trim().removeSurrounding("'").removeSurrounding("\"") }
-            ?: throw ErrorLoadingException("Gagal mengambil kunci otorisasi")
-
-        return "${auth.last()}${auth[9]}${auth[1]}${auth.first()}i"
+        // Ini adalah token hasil analisis Termux dari leviathan.js v946
+        // Jika di kemudian hari error lagi, jalankan script Termux lagi untuk update ini.
+        return "SBQG7oVE0qcQChNGUvV5cRl7MlEh75iQKkwZ1"
     }
 
     private fun randomId(length: Int = 6): String {
