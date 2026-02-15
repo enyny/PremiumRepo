@@ -3,6 +3,7 @@ package com.CeweCantik
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
+import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
@@ -12,14 +13,17 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 class KuramanimeProvider : MainAPI() {
-    override var mainUrl = "https://v5.kuramanime.blog"
+    override var mainUrl = "https://v8.kuramanime.blog" // UPDATE: Domain v8
     override var name = "Kuramanime"
     override val hasQuickSearch = false
     override val hasMainPage = true
     override var lang = "id"
     override var sequentialMainPage = true
     override val hasDownloadSupport = true
-    var authorization : String? = "KFhElffuFYZZHAqqBqlGewkwbaaFUtJS"
+    
+    // Auth token bisa berubah, kita buat var agar bisa di-update
+    var authorization : String? = null 
+
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
@@ -47,7 +51,7 @@ class KuramanimeProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "$mainUrl/anime/ongoing?order_by=updated&page=" to "Sedang Tayang",
         "$mainUrl/anime/finished?order_by=updated&page=" to "Selesai Tayang",
-        "$mainUrl/properties/season/summer-2022?order_by=most_viewed&page=" to "Dilihat Terbanyak Musim Ini",
+        "$mainUrl/properties/season/winter-2024?order_by=most_viewed&page=" to "Dilihat Terbanyak Musim Ini", // Update season biar ga jadul
         "$mainUrl/anime/movie?order_by=updated&page=" to "Film Layar Lebar",
     )
 
@@ -115,6 +119,7 @@ class KuramanimeProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
 
+        // Mengambil episode, loop page
         for (i in 1..30) {
             val doc = app.get("$url?page=$i").document
             val eps = Jsoup.parse(doc.select("#episodeLists").attr("data-content"))
@@ -158,7 +163,6 @@ class KuramanimeProvider : MainAPI() {
             addMalId(tracker?.malId)
             addAniListId(tracker?.aniId?.toIntOrNull())
         }
-
     }
 
     private suspend fun invokeLocalSource(
@@ -174,6 +178,7 @@ class KuramanimeProvider : MainAPI() {
             headers = headers,
             cookies = cookies
         ).document
+        
         document.select("video#player > source").map {
             val link = fixUrl(it.attr("src"))
             val quality = it.attr("size").toIntOrNull()
@@ -213,7 +218,10 @@ class KuramanimeProvider : MainAPI() {
         cookies = req.cookies
 
         val token = res.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
-        val dataKps = res.selectFirst("div.col-lg-12.mt-3")?.attr("data-kk") ?: return false
+        
+        // PERBAIKAN: Menggunakan selector atribut [data-kk] yang lebih spesifik
+        // HTML: <div class="col-lg-12 mt-3" data-kk="wzl3ClXO8shDECR">
+        val dataKps = res.selectFirst("div[data-kk]")?.attr("data-kk") ?: return false
 
         val assets = getAssets(dataKps)
 
@@ -224,6 +232,10 @@ class KuramanimeProvider : MainAPI() {
             "X-Request-Index" to "0",
             "X-Requested-With" to "XMLHttpRequest",
         )
+
+        // PERBAIKAN: Ambil script auth dinamis dari HTML input hidden
+        // HTML: <input type="hidden" id="tokenAuthJs" value="/storage/leviathan.js?v=942">
+        val authScriptPath = res.selectFirst("#tokenAuthJs")?.attr("value")
 
         val tokenKey = app.get(
             "$mainUrl/${assets.MIX_PREFIX_AUTH_ROUTE_PARAM}${assets.MIX_AUTH_ROUTE_PARAM}",
@@ -236,25 +248,32 @@ class KuramanimeProvider : MainAPI() {
             "X-Requested-With" to "XMLHttpRequest",
         )
 
+        // Pastikan authorization token terupdate dengan path script terbaru
+        authorization = fetchAuth(authScriptPath)
+
         res.select("select#changeServer option").amap { source ->
             val server = source.attr("value")
             val link =
                 "$data?${assets.MIX_PAGE_TOKEN_KEY}=$tokenKey&${assets.MIX_STREAM_SERVER_KEY}=$server"
+            
             if (server.contains(Regex("(?i)kuramadrive|archive"))) {
                 invokeLocalSource(link, server, headers, subtitleCallback, callback)
             } else {
-                app.post(
+                val postRes = app.post(
                     link,
-                    data = mapOf("authorization" to getAuth()),
+                    data = mapOf("authorization" to authorization!!),
                     referer = data,
                     headers = headers,
                     cookies = cookies
-                ).document.select("div.iframe-container iframe").attr("src").let { videoUrl ->
-                    loadExtractor(fixUrl(videoUrl), "$mainUrl/", subtitleCallback, callback)
+                ).document
+                
+                postRes.select("div.iframe-container iframe").attr("src").let { videoUrl ->
+                    if(videoUrl.isNotBlank()) {
+                         loadExtractor(fixUrl(videoUrl), "$mainUrl/", subtitleCallback, callback)
+                    }
                 }
             }
         }
-
 
         return true
     }
@@ -280,17 +299,24 @@ class KuramanimeProvider : MainAPI() {
         )
     }
 
-    suspend fun getAuth() : String {
-        return authorization ?: fetchAuth().also { authorization = it}
+    suspend fun getAuth(): String {
+        return authorization ?: fetchAuth(null).also { authorization = it }
     }
-    suspend fun fetchAuth() : String {
-        val url = "$mainUrl/storage/leviathan.js?v=512"
+
+    // PERBAIKAN: Fungsi fetchAuth sekarang menerima path opsional
+    suspend fun fetchAuth(scriptPath: String?): String {
+        // Jika scriptPath ada (dari HTML), pakai itu. Jika tidak, pakai default (fallback)
+        val path = scriptPath ?: "/storage/leviathan.js?v=942" 
+        val url = "$mainUrl$path"
+        
         val res = app.get(url).text
         val auth = Regex("""=\s*\[(.*?)]""").find(res)?.groupValues?.get(1)
             ?.split(",")
             ?.map { it.trim().removeSurrounding("'").removeSurrounding("\"") }
-            ?: throw ErrorLoadingException()
+            ?: throw ErrorLoadingException("Gagal mengambil kunci otorisasi dari $url")
 
+        // Logikanya: Ambil elemen terakhir, ke-10, ke-2, ke-1, tambah "i"
+        // Note: Array index mulai dari 0. Jadi elemen ke-9 adalah index 9 (item ke-10).
         return "${auth.last()}${auth[9]}${auth[1]}${auth.first()}i"
     }
 
@@ -309,5 +335,4 @@ class KuramanimeProvider : MainAPI() {
         val MIX_PAGE_TOKEN_KEY: String?,
         val MIX_STREAM_SERVER_KEY: String?,
     )
-
 }
