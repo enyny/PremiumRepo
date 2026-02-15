@@ -5,6 +5,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 class Kuramanime : MainAPI() {
@@ -148,17 +151,19 @@ class Kuramanime : MainAPI() {
         document.select("video#player source").forEach { source ->
             val src = source.attr("src")
             val size = source.attr("size") // Contoh: "720", "480"
-            val type = source.attr("type")
             
             if (src.contains(".mp4")) {
+                // FIX: Menggunakan newExtractorLink sesuai ExtractorApi.kt terbaru
                 callback.invoke(
-                    ExtractorLink(
-                        name,
-                        "Kurama Direct ${size}p",
-                        src,
-                        referer = mainUrl,
-                        quality = size.toIntOrNull() ?: Qualities.Unknown.value
-                    )
+                    newExtractorLink(
+                        source = name,
+                        name = "Kurama Direct ${size}p",
+                        url = src,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = mainUrl
+                        this.quality = size.toIntOrNull() ?: Qualities.Unknown.value
+                    }
                 )
             }
         }
@@ -167,13 +172,8 @@ class Kuramanime : MainAPI() {
         // CARA 2: AMBIL LINK DOWNLOAD (BACKUP)
         // -----------------------------------------------------------
         // Kuramanime menyediakan link Pixeldrain, Dropbox, dll di bawah player
-        // Selector: #animeDownloadLink a
         document.select("#animeDownloadLink a").forEach { link ->
             val href = link.attr("href")
-            val text = link.text()
-            
-            // CloudStream otomatis support Pixeldrain, Dropbox, StreamTape
-            // Kita oper link ini ke sistem extractor CloudStream
             loadExtractor(href, data, subtitleCallback, callback)
         }
 
