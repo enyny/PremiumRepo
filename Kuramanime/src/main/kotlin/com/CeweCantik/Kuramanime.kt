@@ -3,6 +3,7 @@ package com.CeweCantik
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.fasterxml.jackson.annotation.JsonProperty
 
 class Kuramanime : MainAPI() {
     override var mainUrl = "https://v8.kuramanime.blog"
@@ -15,17 +16,16 @@ class Kuramanime : MainAPI() {
         TvType.OVA
     )
 
-    // Menggunakan User-Agent standar Chrome Android yang stabil agar tidak dicurigai
-    private val commonUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    // User-Agent Desktop (Windows) agar server memberikan HTML lengkap
+    private val commonUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     private fun getHeaders(referer: String = mainUrl): Map<String, String> {
         return mapOf(
             "User-Agent" to commonUserAgent,
             "Referer" to referer,
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Sec-Ch-Ua-Mobile" to "?1",
-            "Sec-Ch-Ua-Platform" to "\"Android\"",
-            "Upgrade-Insecure-Requests" to "1"
+            "Upgrade-Insecure-Requests" to "1",
+            "Cookie" to "preferred_stserver=filemoon; should_do_galak=hide" // Cookie sakti dari log kamu
         )
     }
 
@@ -34,50 +34,54 @@ class Kuramanime : MainAPI() {
     }
 
     // ==============================
-    // 1. MAIN PAGE (FIXED)
+    // 1. MAIN PAGE (Strategi Baru)
     // ==============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // PERBAIKAN: Menggunakan getHeaders() lengkap, bukan header manual
-        val response = app.get(mainUrl, headers = getHeaders())
-        val document = response.document
         val homePageList = ArrayList<HomePageList>()
 
-        // 1. Bagian Ongoing (Sedang Tayang)
-        val ongoing = document.select("div.product__sidebar__view__item").mapNotNull {
-            val title = it.selectFirst("h5 a")?.text()?.trim() ?: return@mapNotNull null
-            val href = it.selectFirst("h5 a")?.attr("href") ?: return@mapNotNull null
-            val image = it.selectFirst(".product__sidebar__view__item__pic")?.getImageUrl()
-            val epText = it.selectFirst(".ep")?.text()?.trim()
-            
-            newAnimeSearchResponse(title, href, TvType.Anime) {
-                this.posterUrl = image
-                addQuality(epText ?: "")
-            }
+        // Mengambil data dari halaman "Ongoing" (Lebih stabil daripada Home)
+        val ongoingUrl = "$mainUrl/quick/ongoing?order_by=latest"
+        val ongoingDoc = app.get(ongoingUrl, headers = getHeaders()).document
+        val ongoingList = ongoingDoc.select("div.product__item").mapNotNull {
+            it.toSearchResponse()
         }
 
-        // 2. Bagian Terbaru (Latest)
-        val latest = document.select("div.product__item").mapNotNull {
-            val title = it.selectFirst(".product__item__text h5 a")?.text()?.trim() ?: return@mapNotNull null
-            val href = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val image = it.selectFirst(".product__item__pic")?.getImageUrl()
-            val epText = it.selectFirst(".ep")?.text() ?: ""
-            
-            newAnimeSearchResponse(title, href, TvType.Anime) {
-                this.posterUrl = image
-                addQuality(epText)
-            }
+        // Mengambil data dari halaman "Terbaru/Updated"
+        val latestUrl = "$mainUrl/anime?order_by=updated"
+        val latestDoc = app.get(latestUrl, headers = getHeaders()).document
+        val latestList = latestDoc.select("div.product__item").mapNotNull {
+            it.toSearchResponse()
         }
 
-        // Debugging: Jika kosong, kemungkinan kena Cloudflare atau Layout berubah
-        if (ongoing.isEmpty() && latest.isEmpty()) {
-            val pageTitle = document.title()
-            throw ErrorLoadingException("Gagal memuat data. Judul Halaman: $pageTitle. Coba ganti jaringan.")
+        if (ongoingList.isNotEmpty()) {
+            homePageList.add(HomePageList("Sedang Tayang", ongoingList))
         }
-
-        if (ongoing.isNotEmpty()) homePageList.add(HomePageList("Sedang Tayang", ongoing))
-        if (latest.isNotEmpty()) homePageList.add(HomePageList("Terbaru", latest))
         
+        if (latestList.isNotEmpty()) {
+            homePageList.add(HomePageList("Baru Diupdate", latestList))
+        }
+
+        if (homePageList.isEmpty()) {
+            throw ErrorLoadingException("Gagal memuat. Coba refresh atau cek koneksi.")
+        }
+
         return newHomePageResponse(homePageList)
+    }
+
+    // Helper untuk mengubah Element HTML menjadi SearchResponse
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val titleElement = this.selectFirst(".product__item__text h5 a") ?: return null
+        val title = titleElement.text().trim()
+        val href = titleElement.attr("href")
+        val image = this.selectFirst(".product__item__pic")?.getImageUrl()
+        
+        // Coba ambil info episode
+        val epText = this.selectFirst(".ep")?.text()?.trim() ?: ""
+        
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = image
+            addQuality(epText)
+        }
     }
 
     // ==============================
@@ -88,13 +92,7 @@ class Kuramanime : MainAPI() {
         val document = app.get(url, headers = getHeaders()).document
 
         return document.select("div.product__item").mapNotNull {
-            val title = it.selectFirst(".product__item__text h5 a")?.text()?.trim() ?: return@mapNotNull null
-            val href = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val image = it.selectFirst(".product__item__pic")?.getImageUrl()
-            
-            newAnimeSearchResponse(title, href, TvType.Anime) {
-                this.posterUrl = image
-            }
+            it.toSearchResponse()
         }
     }
 
@@ -121,10 +119,10 @@ class Kuramanime : MainAPI() {
             }
         }
 
-        val episodes = document.select("#episodeLists a").mapNotNull {
+        // Selector episode yang lebih luas (menangani ID #episodeLists dan class .anime__details__episodes)
+        val episodes = document.select("#episodeLists a, .anime__details__episodes a").mapNotNull {
             val epHref = it.attr("href")
             val epTitle = it.text().trim()
-            // Ekstrak angka episode dengan aman
             val epNum = Regex("Episode\\s+(\\d+)").find(epTitle)?.groupValues?.get(1)?.toIntOrNull()
             
             newEpisode(epHref) {
@@ -143,7 +141,7 @@ class Kuramanime : MainAPI() {
     }
 
     // ==============================
-    // 4. LOAD LINKS (API METHOD)
+    // 4. LOAD LINKS (Metode API Check-Episode)
     // ==============================
     override suspend fun loadLinks(
         data: String,
@@ -151,22 +149,20 @@ class Kuramanime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Ambil halaman episode dulu untuk cookie dan CSRF
+        // Ambil halaman untuk CSRF token
         val response = app.get(data, headers = getHeaders())
         val document = response.document
         val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content")
 
-        // Regex untuk ambil ID dan Episode dari URL
         val urlRegex = Regex("""/anime/(\d+)/[^/]+/episode/(\d+)""")
         val match = urlRegex.find(data)
 
         if (match != null && csrfToken != null) {
             val (animeId, episodeNum) = match.destructured
-            // URL API Rahasia
+            // URL API Rahasia yang ditemukan dari log
             val apiUrl = "$mainUrl/anime/$animeId/episode/$episodeNum/check-episode"
 
             try {
-                // Header Khusus API
                 val apiHeaders = getHeaders(data).toMutableMap()
                 apiHeaders["X-CSRF-TOKEN"] = csrfToken
                 apiHeaders["X-Requested-With"] = "XMLHttpRequest"
@@ -178,15 +174,15 @@ class Kuramanime : MainAPI() {
                     var serverUrl = apiResponse.url
                     if (serverUrl.startsWith("//")) serverUrl = "https:$serverUrl"
                     
-                    // Load link yang didapat (biasanya sunrong/f75s)
+                    // Prioritas: Load link dari API (Filemoon/Sunrong)
                     loadExtractor(serverUrl, data, subtitleCallback, callback)
                 }
             } catch (e: Exception) {
-                // Fallback ke manual jika API error
+                // Ignore API fail
             }
         }
 
-        // Fallback: Scan Iframe di HTML awal
+        // Fallback: Scan Iframe biasa (jika API gagal)
         document.select("iframe").forEach { iframe ->
             val src = iframe.attr("src")
             if (src.isNotEmpty() && !src.contains("chat") && !src.contains("disqus")) {
@@ -198,7 +194,7 @@ class Kuramanime : MainAPI() {
     }
 
     data class KuramaApiResponse(
-        val url: String? = null,
-        val message: String? = null
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("message") val message: String? = null
     )
 }
