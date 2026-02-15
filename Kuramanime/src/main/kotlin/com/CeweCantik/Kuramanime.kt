@@ -30,8 +30,6 @@ class KuramanimeProvider : MainAPI() {
     )
 
     companion object {
-        private var cookies: Map<String, String> = mapOf()
-
         fun getType(t: String, s: Int): TvType {
             return if (t.contains("OVA", true) || t.contains("Special")) TvType.OVA
             else if (t.contains("Movie", true) && s == 1) TvType.AnimeMovie
@@ -163,24 +161,28 @@ class KuramanimeProvider : MainAPI() {
         }
     }
 
-    // Fungsi khusus untuk menangani Kuramadrive (Google Drive API)
     private suspend fun invokeLocalSource(
         pid: String,
         document: org.jsoup.nodes.Document,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // Cari sid (Server ID) di dalam script atau html
-        // Pattern: "sid":"91219" atau sid: "91219" atau data-sid="91219"
         val html = document.html()
         
-        // Regex untuk mencari sid di JSON atau Variable JS
-        val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?(\d+)["']?""")
-        val sid = sidRegex.find(html)?.groupValues?.get(1)
+        // Pola regex diperbanyak untuk menangkap 'sid' di berbagai format JS/HTML
+        val possiblePatterns = listOf(
+            Regex("""["']?sid["']?\s*[:=]\s*["']?(\d+)["']?"""), // JSON atau JS object: "sid": 123
+            Regex("""sid\s*=\s*["']?(\d+)["']?"""), // Variable JS: sid = 123
+            Regex("""data-sid\s*=\s*["'](\d+)["']""") // Attribute HTML: data-sid="123"
+        )
+
+        var sid: String? = null
+        for (pattern in possiblePatterns) {
+            sid = pattern.find(html)?.groupValues?.get(1)
+            if (sid != null) break
+        }
 
         if (pid.isNotEmpty() && !sid.isNullOrEmpty()) {
-            // Kita buat URL palsu untuk ditangkap Extractor "Kuramadrive"
-            // Format: https://v8.kuramanime.blog/kuramadrive?pid=...&sid=...
             val link = "$mainUrl/kuramadrive?pid=$pid&sid=$sid"
             loadExtractor(link, "$mainUrl/", subtitleCallback, callback)
         }
@@ -195,32 +197,32 @@ class KuramanimeProvider : MainAPI() {
 
         val req = app.get(data)
         val res = req.document
-        cookies = req.cookies
+        val cookies = req.cookies
 
-        // 1. Ambil PID (Post ID) dari Halaman Utama Episode
-        // HTML: <input type="hidden" id="postId" value="17608">
         val pid = res.selectFirst("input#postId")?.attr("value") ?: ""
-
         val token = res.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
         val dataKps = res.selectFirst("div[data-kk]")?.attr("data-kk") ?: return false
         val assets = getAssets(dataKps)
 
-        var headers = mapOf(
+        // Header awal untuk get TokenKey (mirip curl Ks6sqSgloPTlHMl.txt)
+        val initHeaders = mapOf(
             "X-CSRF-TOKEN" to token,
-            "X-Fuck-ID" to "${assets.MIX_AUTH_KEY}:${assets.MIX_AUTH_TOKEN}",
+            "X-Fuck-ID" to "${assets.MIX_AUTH_KEY}:${assets.MIX_AUTH_TOKEN}", // Header ini hanya dipakai di sini
             "X-Request-ID" to randomId(),
             "X-Request-Index" to "0",
             "X-Requested-With" to "XMLHttpRequest",
         )
 
         val authScriptPath = res.selectFirst("#tokenAuthJs")?.attr("value")
+        
         val tokenKey = app.get(
             "$mainUrl/${assets.MIX_PREFIX_AUTH_ROUTE_PARAM}${assets.MIX_AUTH_ROUTE_PARAM}",
-            headers = headers,
+            headers = initHeaders,
             cookies = cookies
         ).text
 
-        headers = mapOf(
+        // Header bersih untuk request Player (mirip curl user ke /episode/1)
+        val playerHeaders = mapOf(
             "X-CSRF-TOKEN" to token,
             "X-Requested-With" to "XMLHttpRequest",
         )
@@ -232,20 +234,18 @@ class KuramanimeProvider : MainAPI() {
             val link =
                 "$data?${assets.MIX_PAGE_TOKEN_KEY}=$tokenKey&${assets.MIX_STREAM_SERVER_KEY}=$server"
             
-            // Request ke server untuk dapatkan Player HTML
+            // Request POST ke server video
             val postRes = app.post(
                 link,
                 data = mapOf("authorization" to authorization!!),
                 referer = data,
-                headers = headers,
+                headers = playerHeaders, // Pakai header bersih
                 cookies = cookies
             ).document
 
             if (server.contains("kuramadrive", true)) {
-                // Jika server adalah Kuramadrive, kita pakai logika PID & SID
                 invokeLocalSource(pid, postRes, subtitleCallback, callback)
             } else {
-                // Server lain (StreamWish, FileLions, dll) biasanya pakai iframe
                 postRes.select("div.iframe-container iframe").attr("src").let { videoUrl ->
                     if(videoUrl.isNotBlank()) {
                          loadExtractor(fixUrl(videoUrl), "$mainUrl/", subtitleCallback, callback)
@@ -285,7 +285,6 @@ class KuramanimeProvider : MainAPI() {
     suspend fun fetchAuth(scriptPath: String?): String {
         val path = scriptPath ?: "/storage/leviathan.js?v=942" 
         val url = "$mainUrl$path"
-        
         val res = app.get(url).text
         val auth = Regex("""=\s*\[(.*?)]""").find(res)?.groupValues?.get(1)
             ?.split(",")
