@@ -1,6 +1,8 @@
 package com.CeweCantik
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
@@ -14,6 +16,7 @@ class Kuramanime : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
+    // Header Browser Asli (Penting!)
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -87,7 +90,7 @@ class Kuramanime : MainAPI() {
     // 3. LOAD (DETAIL ANIME)
     // ==========================================
     override suspend fun load(url: String): LoadResponse {
-        // Trik: Selalu gunakan URL episode untuk parsing list episode
+        // Selalu arahkan ke link episode karena halaman detail info sering kosong
         val fixUrl = if (url.contains("/episode/")) url else "$url/episode/1"
         
         val document = app.get(fixUrl, headers = commonHeaders).document
@@ -101,7 +104,7 @@ class Kuramanime : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: ""
         val description = document.selectFirst("meta[name=description]")?.attr("content")
 
-        // Selector Episode (Dikonfirmasi dari audit HTML sebelumnya)
+        // Mengambil daftar episode
         val episodes = document.select("#animeEpisodes a").mapNotNull { ep ->
             val epUrl = fixUrl(ep.attr("href"))
             val epName = ep.text().trim()
@@ -126,7 +129,7 @@ class Kuramanime : MainAPI() {
     }
 
     // ==========================================
-    // 4. LOAD LINKS (VIDEO PLAYER)
+    // 4. LOAD LINKS (VIDEO PLAYER & DOWNLOAD)
     // ==========================================
     override suspend fun loadLinks(
         data: String,
@@ -135,47 +138,65 @@ class Kuramanime : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
+        // Request ke halaman episode
         val document = app.get(data, headers = commonHeaders).document
         
-        // 1. Cek Dropdown Server
+        // -----------------------------------------------------------
+        // CARA 1: AMBIL VIDEO LANGSUNG DARI HTML (MP4 DIRECT)
+        // -----------------------------------------------------------
+        // Sesuai temuan HTML kamu: <source id="source720" src="..." ...>
+        document.select("video#player source").forEach { source ->
+            val src = source.attr("src")
+            val size = source.attr("size") // Contoh: "720", "480"
+            val type = source.attr("type")
+            
+            if (src.contains(".mp4")) {
+                callback.invoke(
+                    ExtractorLink(
+                        name,
+                        "Kurama Direct ${size}p",
+                        src,
+                        referer = mainUrl,
+                        quality = size.toIntOrNull() ?: Qualities.Unknown.value
+                    )
+                )
+            }
+        }
+
+        // -----------------------------------------------------------
+        // CARA 2: AMBIL LINK DOWNLOAD (BACKUP)
+        // -----------------------------------------------------------
+        // Kuramanime menyediakan link Pixeldrain, Dropbox, dll di bawah player
+        // Selector: #animeDownloadLink a
+        document.select("#animeDownloadLink a").forEach { link ->
+            val href = link.attr("href")
+            val text = link.text()
+            
+            // CloudStream otomatis support Pixeldrain, Dropbox, StreamTape
+            // Kita oper link ini ke sistem extractor CloudStream
+            loadExtractor(href, data, subtitleCallback, callback)
+        }
+
+        // -----------------------------------------------------------
+        // CARA 3: CEK SERVER LAIN (JIKA ADA)
+        // -----------------------------------------------------------
         val serverOptions = document.select("select#changeServer option")
-        
         if (serverOptions.isNotEmpty()) {
             serverOptions.forEach { option ->
                 val serverValue = option.attr("value")
                 val serverName = option.text()
                 
-                if (serverName.contains("vip", true)) return@forEach
+                // Skip Kuramadrive (karena sudah dicover di Cara 1 & 2)
+                if (serverValue.contains("kuramadrive")) return@forEach
 
-                // Request ke URL server dengan parameter standar
                 val serverUrl = "$data?server=$serverValue"
-                
                 try {
                     val doc = app.get(serverUrl, headers = commonHeaders).document
-                    
-                    // Cara 1: Cari Iframe Standar
                     val iframe = doc.select("iframe").attr("src")
                     if (iframe.isNotBlank()) {
                         loadExtractor(iframe, data, subtitleCallback, callback)
                     }
-                    
-                    // Cara 2: Cari Script Embed (untuk server bandel)
-                    // Kadang server disembunyikan dalam variabel JS
-                    val scripts = doc.select("script").html()
-                    val embeddedUrl = Regex("""src\s*=\s*['"]([^'"]+)['"]""").find(scripts)?.groupValues?.get(1)
-                    if (!embeddedUrl.isNullOrEmpty() && embeddedUrl.startsWith("http")) {
-                         loadExtractor(embeddedUrl, data, subtitleCallback, callback)
-                    }
-
                 } catch (e: Exception) {}
-            }
-        } else {
-            // 2. Fallback: Cari Iframe langsung di halaman ini
-            document.select("iframe").forEach { iframe ->
-                val src = iframe.attr("src")
-                if (src.isNotBlank()) {
-                    loadExtractor(src, data, subtitleCallback, callback)
-                }
             }
         }
 
