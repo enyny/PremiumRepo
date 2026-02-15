@@ -1,9 +1,6 @@
 package com.CeweCantik
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
@@ -17,51 +14,18 @@ class Kuramanime : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // Header Browser Asli (Penting untuk video)
+    // Header Browser Asli (Penting untuk melewati proteksi)
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "X-Requested-With" to "XMLHttpRequest",
+        "X-Requested-With" to "XMLHttpRequest", // Kadang dibutuhkan
         "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
         "Sec-Ch-Ua-Mobile" to "?0",
         "Sec-Ch-Ua-Platform" to "\"Linux\""
     )
 
     // ==========================================
-    // JSON DATA CLASSES
-    // ==========================================
-    data class KuramaResponse(
-        @JsonProperty("data") val data: List<KuramaAnime>? = null,
-        @JsonProperty("ongoingAnimes") val ongoingAnimes: KuramaPage? = null,
-        @JsonProperty("finishedAnimes") val finishedAnimes: KuramaPage? = null,
-        @JsonProperty("movieAnimes") val movieAnimes: KuramaPage? = null,
-    )
-
-    data class KuramaPage(
-        @JsonProperty("data") val data: List<KuramaAnime>? = null
-    )
-
-    data class KuramaAnime(
-        @JsonProperty("id") val id: Int? = null,
-        @JsonProperty("title") val title: String? = null,
-        @JsonProperty("slug") val slug: String? = null,
-        @JsonProperty("synopsis") val synopsis: String? = null,
-        @JsonProperty("image_portrait_url") val imagePortraitUrl: String? = null,
-        @JsonProperty("image_landscape_url") val imageLandscapeUrl: String? = null,
-        @JsonProperty("posts") val posts: List<KuramaPost>? = null, // INI KUNCINYA!
-        @JsonProperty("score") val score: Double? = null,
-        @JsonProperty("type") val type: String? = null,
-    )
-
-    data class KuramaPost(
-        @JsonProperty("title") val title: String? = null,
-        @JsonProperty("episode") val episode: String? = null,
-        @JsonProperty("id") val id: Int? = null,
-        @JsonProperty("anime_id") val animeId: Int? = null
-    )
-
-    // ==========================================
-    // 1. HOME (JSON API)
+    // 1. HOME (HTML PARSING)
     // ==========================================
     override val mainPage = mainPageOf(
         "$mainUrl/quick/ongoing?order_by=updated&page=" to "Sedang Tayang",
@@ -71,135 +35,112 @@ class Kuramanime : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = request.data + page + "&need_json=true"
-        val response = app.get(url, headers = commonHeaders).text
+        val url = request.data + page
+        val document = app.get(url, headers = commonHeaders).document
         
-        // Kita parse responsenya
-        val json = parseJson<KuramaResponse>(response)
-        
-        // Gabungkan semua kemungkinan lokasi data
-        val animeList = json.data 
-            ?: json.ongoingAnimes?.data 
-            ?: json.finishedAnimes?.data 
-            ?: json.movieAnimes?.data 
-            ?: emptyList()
-
-        val home = animeList.mapNotNull { anime ->
-            toSearchResult(anime)
+        // Selector HTML berdasarkan struktur website
+        val home = document.select("div.product__sidebar__view__item, .product__item").mapNotNull { element ->
+            toSearchResult(element)
         }
 
         return newHomePageResponse(request.name, home)
     }
 
-    private fun toSearchResult(anime: KuramaAnime): SearchResponse? {
-        val title = anime.title ?: return null
-        val id = anime.id ?: return null
+    private fun toSearchResult(element: Element): SearchResponse? {
+        // Cek struktur elemen, bisa jadi ada di parent <a> atau di dalam div
+        val linkElement = element.selectFirst("a") ?: element.parent() as? Element ?: return null
+        val title = linkElement.selectFirst("h5")?.text()?.trim() ?: return null
+        val href = fixUrl(linkElement.attr("href"))
         
-        // TRIK RAHASIA:
-        // Daripada memasukkan URL website, kita masukkan DATA JSON LENGKAP ke dalam variabel URL.
-        // Nanti di fungsi load(), kita baca data ini.
-        val dataUrl = toJson(anime)
+        // Ambil gambar dari style="background-image: url(...)" atau data-setbg
+        var posterUrl = element.attr("data-setbg")
+        if (posterUrl.isNullOrEmpty()) {
+            val style = element.attr("style")
+            if (style.contains("url(")) {
+                posterUrl = style.substringAfter("url(").substringBefore(")").replace("\"", "").replace("'", "")
+            }
+        }
+        
+        // Fallback ambil img tag
+        if (posterUrl.isNullOrEmpty()) {
+            posterUrl = element.selectFirst("img")?.attr("src")
+        }
 
-        val poster = anime.imagePortraitUrl ?: anime.imageLandscapeUrl
+        // Kualitas/Episode info
+        val epText = element.selectFirst(".ep")?.text()?.trim()
 
-        return newAnimeSearchResponse(title, dataUrl, TvType.Anime) {
-            this.posterUrl = poster
-            if (anime.score != null) {
-                // Tampilkan rating di cover depan
-                addQuality("⭐ ${anime.score}")
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = posterUrl
+            if (!epText.isNullOrEmpty()) {
+                addQuality(epText)
             }
         }
     }
 
     // ==========================================
-    // 2. SEARCH (JSON API)
+    // 2. SEARCH (HTML PARSING)
     // ==========================================
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/anime?search=$query&order_by=latest&need_json=true"
-        val response = app.get(url, headers = commonHeaders).text
-        val json = parseJson<KuramaResponse>(response)
+        val url = "$mainUrl/anime?search=$query&order_by=latest"
+        val document = app.get(url, headers = commonHeaders).document
         
-        return json.data?.mapNotNull { toSearchResult(it) } ?: emptyList()
+        return document.select("div.product__sidebar__view__item, .product__item").mapNotNull {
+            toSearchResult(it)
+        }
     }
 
     // ==========================================
-    // 3. LOAD (DATA PASSING)
+    // 3. LOAD (DETAIL ANIME)
     // ==========================================
     override suspend fun load(url: String): LoadResponse {
-        // Cek apakah 'url' adalah JSON (diawali kurung kurawal)
-        if (url.trim().startsWith("{")) {
-            // YES! Ini data dari Home/Search. Kita tidak perlu request internet!
-            val anime = parseJson<KuramaAnime>(url)
+        // Trik: Jika URL mengarah ke episode (misal .../episode/6), kita ambil root anime-nya dulu untuk info,
+        // TAPI kita pakai URL episode untuk parsing list episode (karena halaman detail anime sering kosong).
+        
+        val document = app.get(url, headers = commonHeaders).document
+
+        // Ambil Metadata
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content")
+            ?.replace(Regex("\\(Episode.*\\)"), "")
+            ?.replace("Subtitle Indonesia", "")
+            ?.replace("- Kuramanime", "")
+            ?.trim() ?: "Unknown Title"
+
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("meta[name=description]")?.attr("content")
+
+        // Ambil Episode
+        // Selector update berdasarkan analisis HTML
+        // #animeEpisodes a -> link episode
+        val episodes = document.select("#animeEpisodes a").mapNotNull { ep ->
+            val epUrl = fixUrl(ep.attr("href"))
+            val epName = ep.text().trim() // "Ep 1", "Ep 2"
             
-            val title = anime.title ?: "Unknown"
-            val poster = anime.imagePortraitUrl ?: anime.imageLandscapeUrl
-            val synopsis = anime.synopsis ?: ""
-            val slug = anime.slug ?: ""
-            val id = anime.id ?: 0
+            // Regex untuk ambil nomor episode
+            val epNum = Regex("\\d+").find(epName)?.value?.toIntOrNull()
 
-            // Ambil episode langsung dari JSON
-            val episodes = anime.posts?.mapNotNull { post ->
-                val epNum = post.episode?.toString()?.toIntOrNull()
-                val epTitle = post.title ?: "Episode $epNum"
-                
-                // Buat URL Nonton Manual: .../episode/{num}
-                val epUrl = "$mainUrl/anime/$id/$slug/episode/$epNum"
-
+            if (epUrl.contains("/episode/")) {
                 newEpisode(epUrl) {
-                    this.name = epTitle
+                    this.name = epName
                     this.episode = epNum
                 }
-            }?.reversed() ?: emptyList()
+            } else null
+        }.reversed()
 
-            return newAnimeLoadResponse(title, url, TvType.Anime) {
-                this.posterUrl = poster
-                this.plot = synopsis
-                
-                // Set rating
-                if (anime.score != null) {
-                    this.score = Score.from(anime.score, 10)
-                }
-                
-                if (episodes.isNotEmpty()) {
-                    addEpisodes(DubStatus.Subbed, episodes)
-                }
-            }
-        } else {
-            // FALLBACK: Kalau URL-nya link biasa (misal dari share link), kita scraping HTML.
-            // Trik: Kita arahkan ke /episode/1 karena halaman detail biasa KOSONG (hasil temuan termux).
-            val fixUrl = if (url.contains("/episode/")) url else "$url/episode/1"
+        return newAnimeLoadResponse(title, url, TvType.Anime) {
+            this.posterUrl = poster
+            this.plot = description
             
-            val document = app.get(fixUrl, headers = commonHeaders).document
-            
-            val title = document.select("meta[property=og:title]").attr("content")
-                .replace(Regex("\\(Episode.*\\)"), "")
-                .replace("Subtitle Indonesia - Kuramanime", "").trim()
-            val poster = document.select("meta[property=og:image]").attr("content")
-            val description = document.select("meta[name=description]").attr("content")
+            // Tambahkan Score jika ada (convert manual karena class Score mungkin error di beberapa versi)
+            // if (scoreText != null) addScore(scoreText) 
 
-            val episodes = document.select("#animeEpisodes a").mapNotNull { ep ->
-                val epUrl = fixUrl(ep.attr("href"))
-                val epName = ep.text().trim()
-                val epNum = Regex("\\d+").find(epName)?.value?.toIntOrNull()
-
-                if (epUrl.contains("/episode/")) {
-                    newEpisode(epUrl) {
-                        this.name = epName
-                        this.episode = epNum
-                    }
-                } else null
-            }.reversed()
-
-            return newAnimeLoadResponse(title, url, TvType.Anime) {
-                this.posterUrl = poster
-                this.plot = description
-                if (episodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, episodes)
+            if (episodes.isNotEmpty()) {
+                addEpisodes(DubStatus.Subbed, episodes)
             }
         }
     }
 
     // ==========================================
-    // 4. LOAD LINKS (VIDEO)
+    // 4. LOAD LINKS (VIDEO PLAYER)
     // ==========================================
     override suspend fun loadLinks(
         data: String,
@@ -208,30 +149,36 @@ class Kuramanime : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        val ajaxHeaders = commonHeaders + mapOf(
-            "Sec-Fetch-Mode" to "cors",
-            "Sec-Fetch-Dest" to "empty"
-        )
-
         val document = app.get(data, headers = commonHeaders).document
+        
+        // 1. Cek Dropdown Server (Paling umum)
         val serverOptions = document.select("select#changeServer option")
-
+        
         if (serverOptions.isNotEmpty()) {
             serverOptions.forEach { option ->
-                val serverValue = option.attr("value")
                 val serverName = option.text()
+                val serverValue = option.attr("value")
+                
+                // Skip server VIP/Premium
                 if (serverName.contains("vip", true)) return@forEach
 
+                // Construct URL server
                 val serverUrl = "$data?server=$serverValue"
+                
                 try {
-                    val doc = app.get(serverUrl, headers = ajaxHeaders).document
+                    // Request ke URL server dengan header lengkap
+                    val doc = app.get(serverUrl, headers = commonHeaders).document
                     val iframe = doc.select("iframe").attr("src")
+                    
                     if (iframe.isNotBlank()) {
                         loadExtractor(iframe, data, subtitleCallback, callback)
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    // ignore error per server
+                }
             }
         } else {
+            // 2. Fallback: Cari Iframe langsung (jika tidak ada dropdown)
             document.select("iframe").forEach { iframe ->
                 val src = iframe.attr("src")
                 if (src.isNotBlank()) {
@@ -239,6 +186,7 @@ class Kuramanime : MainAPI() {
                 }
             }
         }
+
         return true
     }
 }
