@@ -23,7 +23,7 @@ jobs:
       - name: Set upstream remote
         run: |
           git remote remove upstream 2>/dev/null || true
-          git remote add upstream https://github.com/michat88/PremiumRepo.git
+          git remote add upstream https://github.com/nuyuls79/Premix.git
 
       - name: Fetch upstream
         run: git fetch upstream --prune
